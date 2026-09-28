@@ -26,6 +26,31 @@ function prop(value: number): string {
   return Number.isInteger(value) ? String(value) : value.toFixed(3)
 }
 
+/** UV bounds of the meshes that sample a texture as their diffuse map. */
+function uvRange(loaded: LoadedCar, texture: string): string {
+  const key = texture.toLowerCase()
+  let minU = Infinity
+  let minV = Infinity
+  let maxU = -Infinity
+  let maxV = -Infinity
+  let meshes = 0
+  for (const m of loaded.meshes) {
+    const mat = loaded.materials[m.materialId]
+    const diffuse = mat?.textures.find((t) => t.name === 'txDiffuse')?.texture
+    if (diffuse?.toLowerCase() !== key) continue
+    meshes++
+    for (let i = 0; i + 1 < m.uvs.length; i += 2) {
+      minU = Math.min(minU, m.uvs[i]!)
+      maxU = Math.max(maxU, m.uvs[i]!)
+      minV = Math.min(minV, m.uvs[i + 1]!)
+      maxV = Math.max(maxV, m.uvs[i + 1]!)
+    }
+  }
+  if (!meshes || !Number.isFinite(minU)) return '-'
+  const f = (v: number) => v.toFixed(3)
+  return `u ${f(minU)}..${f(maxU)} v ${f(minV)}..${f(maxV)} (${meshes} meshes)`
+}
+
 export interface ReportInput {
   car: CarDetails
   loaded: LoadedCar
@@ -74,6 +99,10 @@ export function buildReport({
     )
     push(`painted: ${painted.join(', ') || '-'}`)
   }
+  const uvTextures = new Map(
+    [a.bodyTexture, ...painted].filter((n): n is string => !!n).map((n) => [n.toLowerCase(), n]),
+  )
+  for (const name of uvTextures.values()) push(`uv range of ${name}: ${uvRange(loaded, name)}`)
 
   push()
   push(`skins (${car.skins.length}), shown: ${shownSkin ?? 'model'}`)

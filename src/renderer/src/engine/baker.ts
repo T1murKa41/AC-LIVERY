@@ -16,7 +16,7 @@ import * as THREE from 'three'
 
 export interface BakeMesh {
   geometry: THREE.BufferGeometry
-  /** Model-space world matrix (not the mirrored display matrix). */
+  /** Display-space world matrix, the space projectors are placed in. */
   world: THREE.Matrix4
 }
 
@@ -47,16 +47,18 @@ export interface BakeSettings {
   layers?: BakeLayer[]
 }
 
+// uvOffset moves one UV tile into 0..1 (see uvTiles).
 const UV_VERTEX = /* glsl */ `
 uniform mat4 world;
+uniform vec2 uvOffset;
 varying vec2 vUv;
 varying vec3 vWorldPos;
 varying vec3 vWorldNormal;
 void main() {
-  vUv = uv;
+  vUv = uv + uvOffset;
   vWorldPos = (world * vec4(position, 1.0)).xyz;
   vWorldNormal = normalize(mat3(world) * normal);
-  gl_Position = vec4(uv * 2.0 - 1.0, 0.0, 1.0);
+  gl_Position = vec4(vUv * 2.0 - 1.0, 0.0, 1.0);
 }
 `
 
@@ -161,6 +163,67 @@ void main() {
 `
 
 const DILATE_PASSES = 8
+const MAX_UV_TILES = 64
+
+/**
+ * Offsets that bring every UV tile a mesh touches into 0..1. Samplers wrap,
+ * so a mesh whose UVs lie in -1..0 (common in Kunos models) shows the same
+ * texels as one in 0..1; the bake has to draw it where it will be sampled.
+ */
+export function uvTiles(geometry: THREE.BufferGeometry): [number, number][] {
+  const cached = geometry.userData.uvTiles as [number, number][] | undefined
+  if (cached) return cached
+  const uv = geometry.getAttribute('uv')
+  let minU = Infinity
+  let minV = Infinity
+  let maxU = -Infinity
+  let maxV = -Infinity
+  for (let i = 0; i < (uv?.count ?? 0); i++) {
+    const u = uv!.getX(i)
+    const v = uv!.getY(i)
+    if (!Number.isFinite(u) || !Number.isFinite(v)) continue
+    minU = Math.min(minU, u)
+    maxU = Math.max(maxU, u)
+    minV = Math.min(minV, v)
+    maxV = Math.max(maxV, v)
+  }
+  const tiles: [number, number][] = []
+  if (Number.isFinite(minU)) {
+    // a hair of slack so 0..1 meshes with rounding noise stay one tile
+    const eps = 1e-4
+    const u0 = Math.floor(minU + eps)
+    const v0 = Math.floor(minV + eps)
+    const u1 = Math.max(u0, Math.ceil(maxU - eps) - 1)
+    const v1 = Math.max(v0, Math.ceil(maxV - eps) - 1)
+    for (let v = v0; v <= v1 && tiles.length < MAX_UV_TILES; v++) {
+      for (let u = u0; u <= u1 && tiles.length < MAX_UV_TILES; u++) tiles.push([0 - u, 0 - v])
+    }
+  }
+  geometry.userData.uvTiles = tiles
+  return tiles
+}
+
+/** Draws each mesh once per UV tile it touches. */
+function drawMeshes(
+  renderer: THREE.WebGLRenderer,
+  meshes: BakeMesh[],
+  material: THREE.ShaderMaterial,
+  camera: THREE.Camera,
+): void {
+  const scene = new THREE.Scene()
+  const mesh = new THREE.Mesh(undefined, material)
+  mesh.frustumCulled = false
+  scene.add(mesh)
+  for (const m of meshes) {
+    mesh.geometry = m.geometry
+    material.uniforms.world!.value.copy(m.world)
+    for (const [du, dv] of uvTiles(m.geometry)) {
+      material.uniforms.uvOffset!.value.set(du, dv)
+      material.uniformsNeedUpdate = true
+      renderer.render(scene, camera)
+    }
+  }
+}
 
 function nearestTarget(width: number, height: number): THREE.WebGLRenderTarget {
   return new THREE.WebGLRenderTarget(width, height, {
@@ -193,6 +256,7 @@ export class LiveryBaker {
       fragmentShader: DESIGN_FRAGMENT,
       uniforms: {
         world: { value: new THREE.Matrix4() },
+        uvOffset: { value: new THREE.Vector2() },
         baseColor: { value: new THREE.Vector3() },
       },
       side: THREE.DoubleSide,
@@ -205,6 +269,7 @@ export class LiveryBaker {
       fragmentShader: LAYER_FRAGMENT,
       uniforms: {
         world: { value: new THREE.Matrix4() },
+        uvOffset: { value: new THREE.Vector2() },
         vinyl: { value: null },
         opacity: { value: 1 },
         count: { value: 1 },
@@ -300,20 +365,10 @@ export class LiveryBaker {
     r.setClearColor(0x000000, 0)
     r.clear(true, false, false)
     r.autoClear = false
-    const scene = new THREE.Scene()
-    const mesh = new THREE.Mesh(undefined, this.designMaterial)
-    mesh.frustumCulled = false
-    scene.add(mesh)
     this.designMaterial.uniforms.baseColor!.value.set(...settings.baseColor)
-    for (const m of meshes) {
-      mesh.geometry = m.geometry
-      this.designMaterial.uniforms.world!.value.copy(m.world)
-      this.designMaterial.uniformsNeedUpdate = true
-      r.render(scene, this.camera)
-    }
+    drawMeshes(r, meshes, this.designMaterial, this.camera)
 
     // 1b. vinyls, bottom to top, blended over the base colour
-    mesh.material = this.layerMaterial
     const lu = this.layerMaterial.uniforms
     for (const layer of settings.layers ?? []) {
       if (!layer.projectors.length || layer.opacity <= 0) continue
@@ -328,12 +383,7 @@ export class LiveryBaker {
         lu.axisT!.value[i].set(...p.axisT)
         lu.axisR!.value[i].set(...p.axisR)
       })
-      for (const m of meshes) {
-        mesh.geometry = m.geometry
-        lu.world!.value.copy(m.world)
-        this.layerMaterial.uniformsNeedUpdate = true
-        r.render(scene, this.camera)
-      }
+      drawMeshes(r, meshes, this.layerMaterial, this.camera)
     }
 
     // 2. dilation (ping-pong)
@@ -433,15 +483,11 @@ export function uvCoverage(
   const material = new THREE.ShaderMaterial({
     vertexShader: UV_VERTEX,
     fragmentShader: /* glsl */ `void main(){ gl_FragColor = vec4(1.0); }`,
-    uniforms: { world: { value: new THREE.Matrix4() } },
+    uniforms: { world: { value: new THREE.Matrix4() }, uvOffset: { value: new THREE.Vector2() } },
     side: THREE.DoubleSide,
     depthTest: false,
     depthWrite: false,
   })
-  const scene = new THREE.Scene()
-  const mesh = new THREE.Mesh(undefined, material)
-  mesh.frustumCulled = false
-  scene.add(mesh)
   const prevTarget = renderer.getRenderTarget()
   const prevAutoClear = renderer.autoClear
   const prevClear = renderer.getClearColor(new THREE.Color())
@@ -450,11 +496,7 @@ export function uvCoverage(
   renderer.setClearColor(0x000000, 0)
   renderer.clear(true, false, false)
   renderer.autoClear = false
-  for (const m of meshes) {
-    mesh.geometry = m.geometry
-    material.uniforms.world!.value.copy(m.world)
-    renderer.render(scene, new THREE.OrthographicCamera())
-  }
+  drawMeshes(renderer, meshes, material, new THREE.OrthographicCamera())
   const rgba = new Uint8Array(width * height * 4)
   renderer.readRenderTargetPixels(target, 0, 0, width, height, rgba)
   renderer.setRenderTarget(prevTarget)

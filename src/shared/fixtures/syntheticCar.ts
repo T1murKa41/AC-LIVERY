@@ -417,6 +417,15 @@ export interface SyntheticCarOptions {
 
 export const OVERLAY_TEXTURE = 'Livery.dds'
 
+/**
+ * Shifts texture coordinates by whole tiles. Kunos models often store UVs
+ * one tile away from 0..1 (e.g. v in -1..0); samplers wrap, so they look
+ * the same in game.
+ */
+function shiftUv(m: MeshBuilder, du: number, dv: number): MeshBuilder {
+  return { ...m, uvs: m.uvs.map((x, i) => x + (i % 2 === 0 ? du : dv)) }
+}
+
 function offsetAlongNormals(m: MeshBuilder, distance: number): MeshBuilder {
   const positions = m.positions.map((v, i) => v + m.normals[i]! * distance)
   return { ...m, positions }
@@ -503,7 +512,7 @@ export function buildSyntheticCar(options: SyntheticCarOptions = {}): SyntheticC
         active: true,
         transform: new Float32Array(IDENTITY),
         children: [
-          meshNode('BODY_PAINT', 0, buildBody(options.sharedSideUv ?? false)),
+          meshNode('BODY_PAINT', 0, shiftUv(buildBody(options.sharedSideUv ?? false), 0, -1)),
           meshNode('GLASS_WINDSCREEN', 2, buildGlass()),
           meshNode('DECAL_SPONSOR_L', 3, buildDecal()),
           ...(options.overlayLivery

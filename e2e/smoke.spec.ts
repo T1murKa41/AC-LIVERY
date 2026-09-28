@@ -125,6 +125,8 @@ test('model tab builds a diagnostics report', async ({ page }) => {
   expect(report).toContain('AC Livery diagnostics')
   expect(report).toContain('decals.dds: decals.dds BC3 128x64')
   expect(report).toContain('[ksPerPixelAT]')
+  // the body is stored one UV tile below 0..1, like in Kunos models
+  expect(report).toMatch(/uv range of Skin_00\.dds: u 0\.\d+\.\.0\.\d+ v -0\.9\d+\.\.-0\.\d+/)
 })
 
 test('repainting changes the paint you see, even under a livery overlay', async ({ page }) => {
