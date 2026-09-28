@@ -82,14 +82,15 @@ export function worldToPosition(frame: Frame, w: V3): V3 {
   ]
 }
 
-interface Basis {
+/** World-space axes of a placement: centre, the vinyl's right and up, projection direction. */
+export interface Basis {
   origin: V3
   right: V3
   up: V3
   dir: V3
 }
 
-function basis(frame: Frame, placement: Placement): Basis {
+export function basis(frame: Frame, placement: Placement): Basis {
   const dir = normalize(frameToWorld(frame, placement.direction))
   // "up" of the vinyl: the car's up, or its nose when projecting from above/below
   let up = sub(frame.up, scale(dir, dot(frame.up, dir)))

@@ -97,6 +97,7 @@ export class Viewer {
   interaction: InteractionHandler | null = null
   private dragging = false
   private outline: THREE.Group | null = null
+  private readonly renderListeners = new Set<() => void>()
   private readonly resizeObserver: ResizeObserver
 
   constructor(private readonly canvas: HTMLCanvasElement) {
@@ -207,6 +208,7 @@ export class Viewer {
       if (this.disposed) return
       const moving = this.controls.update()
       this.renderer.render(this.scene, this.camera)
+      for (const listener of this.renderListeners) listener()
       if (moving) this.requestRender()
     })
   }
@@ -395,6 +397,30 @@ export class Viewer {
     }
   }
 
+  /** Calls `listener` after every frame (camera moves, resizes, redraws). */
+  onRender(listener: () => void): () => void {
+    this.renderListeners.add(listener)
+    return () => this.renderListeners.delete(listener)
+  }
+
+  /** Display-space points to CSS pixels inside the canvas; null when behind the camera. */
+  toScreen(points: readonly V3[]): ({ x: number; y: number } | null)[] {
+    const w = this.canvas.clientWidth
+    const h = this.canvas.clientHeight
+    return points.map((p) => {
+      const v = new THREE.Vector3(...p).project(this.camera)
+      if (v.z > 1 || v.z < -1) return null
+      return { x: ((v.x + 1) / 2) * w, y: ((1 - v.y) / 2) * h }
+    })
+  }
+
+  /** Direction the camera looks in (display space). */
+  cameraDirection(): V3 {
+    const d = new THREE.Vector3()
+    this.camera.getWorldDirection(d)
+    return [d.x, d.y, d.z]
+  }
+
   /** Ray through the centre of the viewport. */
   raycastCenter(): RayHit | null {
     const rect = this.canvas.getBoundingClientRect()
@@ -405,7 +431,9 @@ export class Viewer {
    * Draws the outline of the selected vinyl: one rectangle per projector
    * (the mirrored copy dashed), always on top.
    */
-  setOutline(rects: { corners: [number, number, number][]; dashed: boolean }[] | null): void {
+  setOutline(
+    rects: { corners: [number, number, number][]; dashed: boolean; secondary?: boolean }[] | null,
+  ): void {
     if (this.outline) {
       this.scene.remove(this.outline)
       this.outline.traverse((o) => {
@@ -422,14 +450,15 @@ export class Viewer {
         const geometry = new THREE.BufferGeometry().setFromPoints(
           r.corners.map((c) => new THREE.Vector3(...c)),
         )
+        const color = r.secondary ? 0xffc2a3 : 0xff5b1f
         const material = r.dashed
           ? new THREE.LineDashedMaterial({
-              color: 0xff5b1f,
+              color,
               dashSize: 0.05,
               gapSize: 0.04,
               depthTest: false,
             })
-          : new THREE.LineBasicMaterial({ color: 0xff5b1f, depthTest: false })
+          : new THREE.LineBasicMaterial({ color, depthTest: false })
         const line = new THREE.LineLoop(geometry, material)
         if (r.dashed) line.computeLineDistances()
         line.renderOrder = 1000

@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next'
 import { EngineController } from '../engine/controller'
 import type { ViewMode } from '../engine/viewer'
 import { useStore } from '../state/store'
+import { Gizmo } from './Gizmo'
 
 const VIEWS: ViewMode[] = ['perspective', 'left', 'right', 'top', 'front', 'rear']
 
@@ -30,6 +31,7 @@ export function Viewport() {
   return (
     <section className="viewport">
       <canvas ref={canvasRef} className="viewport-canvas" />
+      {load.status === 'ready' && <Gizmo />}
       {load.status === 'ready' && (
         <div className="view-toolbar" role="toolbar">
           {VIEWS.map((v) => (

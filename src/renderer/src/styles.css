@@ -1000,3 +1000,70 @@ button.skin-item {
 .texture-list.compact {
   gap: 4px;
 }
+
+/* ------------------------------------------------------------ gizmo & layers */
+
+.gizmo {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.gizmo-lines {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.gizmo-lines line {
+  stroke: var(--accent);
+  stroke-width: 1.5;
+}
+
+.gizmo-handle {
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  margin: -6px 0 0 -6px;
+  background: #fff;
+  border: 2px solid var(--accent);
+  pointer-events: auto;
+  touch-action: none;
+}
+
+.gizmo-handle.scale {
+  border-radius: 2px;
+  cursor: nwse-resize;
+}
+
+.gizmo-handle.rotate {
+  width: 14px;
+  height: 14px;
+  margin: -7px 0 0 -7px;
+  border-radius: 50%;
+  cursor: grab;
+}
+
+.layer-row.group-row {
+  grid-template-columns: auto 22px minmax(0, 1fr) auto auto;
+}
+
+.layer-row.group-row .layer-name {
+  font-weight: 600;
+}
+
+.layer-row.in-group {
+  padding-left: 22px;
+}
+
+.layer-row.primary {
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.btn.icon {
+  min-width: 32px;
+  font-size: 15px;
+  line-height: 1;
+}

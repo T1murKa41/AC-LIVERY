@@ -70,6 +70,8 @@ interface LayerBase {
   opacity: number
   /** Missing in designs saved before finishes existed: same as 'base'. */
   finish?: LayerFinish
+  /** Group id; members of a group are always next to each other in the stack. */
+  group?: string
   placement: Placement
 }
 
@@ -105,9 +107,15 @@ export interface Asset {
   data: string
 }
 
+export interface LayerGroup {
+  name: string
+}
+
 export interface Design {
+  /** Bottom first. */
   layers: Layer[]
   assets: Record<string, Asset>
+  groups?: Record<string, LayerGroup>
 }
 
 export const EMPTY_DESIGN: Design = { layers: [], assets: {} }

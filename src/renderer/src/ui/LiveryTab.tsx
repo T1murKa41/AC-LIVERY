@@ -27,12 +27,19 @@ function useEditorShortcuts() {
       if (st.tab !== 'livery') return
       const ctrl = e.ctrlKey || e.metaKey
       const key = e.key.toLowerCase()
+      const step = e.shiftKey ? 0.02 : 0.004
       if (ctrl && key === 'z' && !e.shiftKey) st.undo()
       else if (ctrl && (key === 'y' || (key === 'z' && e.shiftKey))) st.redo()
-      else if (ctrl && key === 'd' && st.selectedLayer) st.duplicateLayer(st.selectedLayer)
-      else if ((key === 'delete' || key === 'backspace') && st.selectedLayer)
-        st.removeLayer(st.selectedLayer)
+      else if (ctrl && key === 'd') st.duplicateSelection()
+      else if (ctrl && key === 'g' && e.shiftKey) st.ungroupSelection()
+      else if (ctrl && key === 'g') st.groupSelection()
+      else if (ctrl && key === 'a') st.selectAll()
+      else if (key === 'delete' || key === 'backspace') st.removeSelection()
       else if (key === 'escape') st.selectLayer(null)
+      else if (key === 'arrowleft') st.nudgeSelection(-step, 0)
+      else if (key === 'arrowright') st.nudgeSelection(step, 0)
+      else if (key === 'arrowup') st.nudgeSelection(0, step)
+      else if (key === 'arrowdown') st.nudgeSelection(0, -step)
       else return
       e.preventDefault()
     }

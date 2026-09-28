@@ -641,27 +641,31 @@ export class EngineController {
     return this.viewer.raycastCenter()
   }
 
-  showOutline(layer: Layer | null): void {
+  /** Outlines the selected vinyls; the primary one is drawn stronger. */
+  showOutline(layers: readonly Layer[], primaryId: string | null): void {
     const frame = this.displayFrame()
-    if (!layer || !frame) {
+    if (!layers.length || !frame) {
       this.viewer.setOutline(null)
       return
     }
-    const rects = projectors(frame, layer.placement).map((p, i) => {
-      const s2 = p.axisS[0] ** 2 + p.axisS[1] ** 2 + p.axisS[2] ** 2
-      const t2 = p.axisT[0] ** 2 + p.axisT[1] ** 2 + p.axisT[2] ** 2
-      const sx = p.axisS.map((v) => v / s2) as [number, number, number]
-      const tx = p.axisT.map((v) => v / t2) as [number, number, number]
-      const corner = (a: number, b: number): [number, number, number] => [
-        p.origin[0] + sx[0] * a + tx[0] * b,
-        p.origin[1] + sx[1] * a + tx[1] * b,
-        p.origin[2] + sx[2] * a + tx[2] * b,
-      ]
-      return {
-        corners: [corner(-0.5, -0.5), corner(0.5, -0.5), corner(0.5, 0.5), corner(-0.5, 0.5)],
-        dashed: i > 0,
-      }
-    })
+    const rects = layers.flatMap((layer) =>
+      projectors(frame, layer.placement).map((p, i) => {
+        const s2 = p.axisS[0] ** 2 + p.axisS[1] ** 2 + p.axisS[2] ** 2
+        const t2 = p.axisT[0] ** 2 + p.axisT[1] ** 2 + p.axisT[2] ** 2
+        const sx = p.axisS.map((v) => v / s2) as [number, number, number]
+        const tx = p.axisT.map((v) => v / t2) as [number, number, number]
+        const corner = (a: number, b: number): [number, number, number] => [
+          p.origin[0] + sx[0] * a + tx[0] * b,
+          p.origin[1] + sx[1] * a + tx[1] * b,
+          p.origin[2] + sx[2] * a + tx[2] * b,
+        ]
+        return {
+          corners: [corner(-0.5, -0.5), corner(0.5, -0.5), corner(0.5, 0.5), corner(-0.5, 0.5)],
+          dashed: i > 0,
+          secondary: layer.id !== primaryId,
+        }
+      }),
+    )
     this.viewer.setOutline(rects)
   }
 

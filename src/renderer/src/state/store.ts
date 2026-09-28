@@ -24,17 +24,31 @@ import { logEntries } from '../engine/log'
 import { buildReport, describeMesh } from '../engine/report'
 import { fileToDataUrl, fontFamily, imageAspect, textAspect } from '../engine/vinyl'
 import { packProject, projectFileName, unpackProject } from '@shared/design/project'
-import { worldToPosition } from '@shared/design/placement'
+import {
+  duplicateLayers,
+  groupLayers,
+  groupMembers,
+  moveLayers,
+  removeLayers,
+  ungroup,
+} from '@shared/design/layers'
+import { basis, positionToWorld, worldToPosition } from '@shared/design/placement'
+import {
+  moveSelection,
+  rotateSelection,
+  scaleSelection,
+  selectionBounds,
+  snapAngle,
+  type SelectionBounds,
+} from '@shared/design/transform'
 import {
   DEFAULT_PLACEMENT,
   EMPTY_DESIGN,
   FONT_ASSET_PREFIX,
-  duplicateLayer,
   newId,
   newImageLayer,
   newShapeLayer,
   newTextLayer,
-  pruneAssets,
   type Asset,
   type BaseFinish,
   type Design,
@@ -44,6 +58,7 @@ import {
   type ShapeKind,
   type ShapeLayer,
   type TextLayer,
+  type V3,
 } from '@shared/design/types'
 import type { ViewMode } from '../engine/viewer'
 import i18n from '../i18n'
@@ -144,7 +159,10 @@ interface State {
   liveryCandidates: LiveryCandidate[]
   autoLivery: string[]
   liveryPanel: LiveryPanel
+  /** Primary selected layer: its properties are shown and transforms pivot on its plane. */
   selectedLayer: string | null
+  /** Every selected layer, including the primary one. */
+  selection: string[]
   past: Snapshot[]
   future: Snapshot[]
   designError: string | null
@@ -199,12 +217,28 @@ interface Actions {
   addText(text?: string): Promise<void>
   addImage(file: File): Promise<void>
   importFont(file: File): Promise<string | null>
-  selectLayer(id: string | null): void
+  selectLayer(id: string | null, mode?: SelectMode): void
+  selectGroup(groupId: string): void
+  selectAll(): void
   updateLayer(id: string, patch: LayerPatch): Promise<void>
   updatePlacement(id: string, patch: Partial<Placement>, historyTag?: string): void
-  removeLayer(id: string): void
-  duplicateLayer(id: string): void
-  moveLayer(id: string, delta: number): void
+  setLayersFlag(ids: string[], patch: { visible?: boolean; locked?: boolean }): void
+  removeSelection(): void
+  duplicateSelection(): void
+  moveSelection(delta: 1 | -1): void
+  groupSelection(): void
+  ungroupSelection(): void
+  renameGroup(groupId: string, name: string): void
+  alignSelection(mode: AlignMode): void
+  centerSelection(axis: 'width' | 'length'): void
+  nudgeSelection(dx: number, dy: number): void
+  transformSelection(op: { scale?: number; rotate?: number }, historyTag: string): void
+  /** Rectangle around the selection in the plane of the primary layer (display space). */
+  selectionBounds(): SelectionBounds | null
+  beginGizmo(): void
+  /** Scale factor and/or screen rotation (degrees, counter-clockwise) since beginGizmo. */
+  gizmoUpdate(op: { scale?: number; rotate?: number; snap?: boolean }): void
+  endGizmo(): void
   clearDesign(): void
   undo(): void
   redo(): void
@@ -217,6 +251,17 @@ interface Actions {
   dismissProjectError(): void
 }
 
+export type SelectMode = 'replace' | 'toggle' | 'range'
+export type AlignMode = 'left' | 'hcenter' | 'right' | 'top' | 'vcenter' | 'bottom'
+
+/** How close (in body-normalised units) a selection snaps to the car's centre line. */
+const CENTRE_SNAP = 0.03
+
+const vadd = (a: V3, b: V3): V3 => [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
+const vsub = (a: V3, b: V3): V3 => [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+const vscale = (a: V3, k: number): V3 => [a[0] * k, a[1] * k, a[2] * k]
+const vdot = (a: V3, b: V3): number => a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+
 /** Visual properties of any layer kind that can be edited. */
 export type LayerPatch = Partial<
   Omit<ShapeLayer, 'kind' | 'id' | 'placement'> &
@@ -227,7 +272,20 @@ export type LayerPatch = Partial<
 let engine: EngineController | null = null
 let lastHistoryTag: string | null = null
 let lastHistoryAt = 0
-let drag: { id: string; offset: [number, number, number] } | null = null
+let drag: {
+  id: string
+  offset: V3
+  /** Placements of every moved layer when the drag started. */
+  start: Map<string, Placement>
+  startOrigin: V3
+  startDir: V3
+} | null = null
+let gizmo: {
+  ids: string[]
+  placements: Placement[]
+  bounds: SelectionBounds
+  primaryRotation: number
+} | null = null
 let bakeQueued = false
 let bakeRunning: Promise<void> | null = null
 /** Draft as last saved, exported or opened; anything else is unsaved work. */
@@ -299,12 +357,58 @@ export const useStore = create<State & Actions>((set, get) => {
     })
   }
 
+  /** Selected layers in stack order (bottom first). */
+  const selectedLayers = (): Layer[] => {
+    const selected = new Set(get().selection)
+    return get().draft.design.layers.filter((l) => selected.has(l.id))
+  }
+
+  const primaryLayer = (): Layer | null =>
+    get().draft.design.layers.find((l) => l.id === get().selectedLayer) ?? null
+
   const refreshOutline = (): void => {
-    const { tab, selectedLayer, draft } = get()
-    const layer = draft.design.layers.find((l) => l.id === selectedLayer) ?? null
-    engine?.showOutline(tab === 'livery' ? layer : null)
+    const { tab, selectedLayer } = get()
+    engine?.showOutline(tab === 'livery' ? selectedLayers() : [], selectedLayer)
+    const layer = primaryLayer()
     const offPaint = !!layer && !!engine && !engine.layerReachesPaint(layer)
     if (offPaint !== get().selectedOffPaint) set({ selectedOffPaint: offPaint })
+  }
+
+  const setSelection = (ids: string[], primary: string | null): void => {
+    set({
+      selection: ids,
+      selectedLayer: primary && ids.includes(primary) ? primary : (ids.at(-1) ?? null),
+    })
+    refreshOutline()
+  }
+
+  /** Forgets selected layers that no longer exist (after undo, removal...). */
+  const pruneSelection = (): void => {
+    const exists = new Set(get().draft.design.layers.map((l) => l.id))
+    const { selection, selectedLayer } = get()
+    const kept = selection.filter((id) => exists.has(id))
+    if (kept.length !== selection.length || (selectedLayer && !exists.has(selectedLayer))) {
+      setSelection(kept, selectedLayer)
+    }
+  }
+
+  /** Unlocked selected layers and the primary layer whose plane transforms use. */
+  const transformable = () => {
+    const frame = engine?.displayFrame()
+    const primary = primaryLayer()
+    const layers = selectedLayers().filter((l) => !l.locked)
+    if (!frame || !primary || !layers.length) return null
+    return { frame, primary, layers }
+  }
+
+  const setPlacements = (placements: Map<string, Placement>): void => {
+    const design = get().draft.design
+    setDesign({
+      ...design,
+      layers: design.layers.map((l) =>
+        placements.has(l.id) ? { ...l, placement: placements.get(l.id)! } : l,
+      ),
+    })
   }
 
   const setDesign = (design: Design): void => {
@@ -328,7 +432,7 @@ export const useStore = create<State & Actions>((set, get) => {
   const addLayer = (layer: Layer): void => {
     pushHistory()
     const design = get().draft.design
-    set({ selectedLayer: layer.id })
+    set({ selectedLayer: layer.id, selection: [layer.id] })
     setDesign({ ...design, layers: [...design.layers, layer] })
   }
 
@@ -351,6 +455,7 @@ export const useStore = create<State & Actions>((set, get) => {
     set({
       draft,
       selectedLayer: null,
+      selection: [],
       past: [],
       future: [],
       exportState: { status: 'idle' },
@@ -397,6 +502,7 @@ export const useStore = create<State & Actions>((set, get) => {
     autoLivery: [],
     liveryPanel: 'design',
     selectedLayer: null,
+    selection: [],
     past: [],
     future: [],
     designError: null,
@@ -557,6 +663,7 @@ export const useStore = create<State & Actions>((set, get) => {
           tab: 'livery',
           exportState: { status: 'idle' },
           selectedLayer: null,
+          selection: [],
           past: [],
           future: [],
           projectPath: null,
@@ -780,9 +887,33 @@ export const useStore = create<State & Actions>((set, get) => {
       }
     },
 
-    selectLayer(id) {
-      set({ selectedLayer: id })
-      refreshOutline()
+    selectLayer(id, mode = 'replace') {
+      if (!id) return setSelection([], null)
+      const { selection, selectedLayer, draft } = get()
+      if (mode === 'toggle') {
+        const next = selection.includes(id) ? selection.filter((x) => x !== id) : [...selection, id]
+        return setSelection(next, next.includes(id) ? id : selectedLayer)
+      }
+      if (mode === 'range' && selectedLayer) {
+        const ids = draft.design.layers.map((l) => l.id)
+        const a = ids.indexOf(selectedLayer)
+        const b = ids.indexOf(id)
+        if (a >= 0 && b >= 0) return setSelection(ids.slice(Math.min(a, b), Math.max(a, b) + 1), id)
+      }
+      setSelection([id], id)
+    },
+
+    selectGroup(groupId) {
+      const ids = groupMembers(get().draft.design, groupId).map((l) => l.id)
+      const primary = get().selectedLayer
+      setSelection(ids, primary && ids.includes(primary) ? primary : (ids.at(-1) ?? null))
+    },
+
+    selectAll() {
+      setSelection(
+        get().draft.design.layers.map((l) => l.id),
+        get().selectedLayer,
+      )
     },
 
     async updateLayer(id, patch) {
@@ -813,41 +944,225 @@ export const useStore = create<State & Actions>((set, get) => {
       mapLayer(id, (l) => ({ ...l, placement: { ...l.placement, ...patch } }))
     },
 
-    removeLayer(id) {
+    setLayersFlag(ids, patch) {
+      const chosen = new Set(ids)
+      if (!chosen.size) return
       pushHistory()
       const design = get().draft.design
-      if (get().selectedLayer === id) set({ selectedLayer: null })
-      setDesign(pruneAssets({ ...design, layers: design.layers.filter((l) => l.id !== id) }))
+      setDesign({
+        ...design,
+        layers: design.layers.map((l) => (chosen.has(l.id) ? { ...l, ...patch } : l)),
+      })
     },
 
-    duplicateLayer(id) {
-      const design = get().draft.design
-      const index = design.layers.findIndex((l) => l.id === id)
-      if (index < 0) return
+    removeSelection() {
+      const { selection, draft } = get()
+      if (!selection.length) return
       pushHistory()
-      const copy = duplicateLayer(design.layers[index]!)
-      const layers = [...design.layers]
-      layers.splice(index + 1, 0, copy)
-      set({ selectedLayer: copy.id })
-      setDesign({ ...design, layers })
+      setDesign(removeLayers(draft.design, selection))
+      setSelection([], null)
     },
 
-    moveLayer(id, delta) {
-      const design = get().draft.design
-      const index = design.layers.findIndex((l) => l.id === id)
-      const target = index + delta
-      if (index < 0 || target < 0 || target >= design.layers.length) return
+    duplicateSelection() {
+      const originals = selectedLayers()
+      if (!originals.length) return
       pushHistory()
-      const layers = [...design.layers]
-      const [layer] = layers.splice(index, 1)
-      layers.splice(target, 0, layer!)
-      setDesign({ ...design, layers })
+      const { design, ids } = duplicateLayers(get().draft.design, get().selection)
+      const primaryIndex = originals.findIndex((l) => l.id === get().selectedLayer)
+      setDesign(design)
+      setSelection(ids, ids[primaryIndex] ?? ids.at(-1) ?? null)
+    },
+
+    moveSelection(delta) {
+      const design = get().draft.design
+      const next = moveLayers(design, get().selection, delta)
+      if (next === design) return
+      pushHistory()
+      setDesign(next)
+    },
+
+    groupSelection() {
+      const design = get().draft.design
+      const name = i18n.t('design.groupName', {
+        n: Object.keys(design.groups ?? {}).length + 1,
+      })
+      const { design: next, groupId } = groupLayers(design, get().selection, name)
+      if (!groupId) return
+      pushHistory()
+      setDesign(next)
+    },
+
+    ungroupSelection() {
+      const groups = new Set(selectedLayers().flatMap((l) => (l.group ? [l.group] : [])))
+      if (!groups.size) return
+      pushHistory()
+      let design = get().draft.design
+      for (const g of groups) design = ungroup(design, g)
+      setDesign(design)
+    },
+
+    renameGroup(groupId, name) {
+      const design = get().draft.design
+      if (!design.groups?.[groupId]) return
+      pushHistory(`rename:${groupId}`)
+      setDesign({ ...design, groups: { ...design.groups, [groupId]: { name } } })
+    },
+
+    alignSelection(mode) {
+      const t = transformable()
+      if (!t || t.layers.length < 2) return
+      const { frame, primary, layers } = t
+      const all = selectionBounds(
+        frame,
+        layers.map((l) => l.placement),
+        primary.placement,
+      )
+      const ref = basis(frame, primary.placement).origin
+      const u = (p: V3) => vdot(vsub(p, ref), all.right)
+      const v = (p: V3) => vdot(vsub(p, ref), all.up)
+      const placements = new Map<string, Placement>()
+      for (const l of layers) {
+        const own = selectionBounds(frame, [l.placement], primary.placement)
+        let du = 0
+        let dv = 0
+        if (mode === 'left') du = u(all.center) - all.width / 2 - (u(own.center) - own.width / 2)
+        if (mode === 'hcenter') du = u(all.center) - u(own.center)
+        if (mode === 'right') du = u(all.center) + all.width / 2 - (u(own.center) + own.width / 2)
+        if (mode === 'bottom')
+          dv = v(all.center) - all.height / 2 - (v(own.center) - own.height / 2)
+        if (mode === 'vcenter') dv = v(all.center) - v(own.center)
+        if (mode === 'top') dv = v(all.center) + all.height / 2 - (v(own.center) + own.height / 2)
+        const delta = vadd(vscale(all.right, du), vscale(all.up, dv))
+        placements.set(l.id, moveSelection(frame, [l.placement], delta, all.dir)[0]!)
+      }
+      pushHistory()
+      setPlacements(placements)
+    },
+
+    centerSelection(axis) {
+      const t = transformable()
+      if (!t) return
+      const { frame, primary, layers } = t
+      const b = selectionBounds(
+        frame,
+        layers.map((l) => l.placement),
+        primary.placement,
+      )
+      const pos = worldToPosition(frame, b.center)
+      const delta =
+        axis === 'width'
+          ? vscale(frame.left, (-pos[0] * frame.width) / 2)
+          : vscale(frame.forward, (-pos[2] * frame.length) / 2)
+      const moved = moveSelection(
+        frame,
+        layers.map((l) => l.placement),
+        delta,
+        b.dir,
+      )
+      pushHistory()
+      setPlacements(new Map(layers.map((l, i) => [l.id, moved[i]!])))
+    },
+
+    nudgeSelection(dx, dy) {
+      const t = transformable()
+      if (!t) return
+      const { frame, primary, layers } = t
+      const b = selectionBounds(
+        frame,
+        layers.map((l) => l.placement),
+        primary.placement,
+      )
+      const delta = vadd(vscale(b.right, dx * frame.length), vscale(b.up, dy * frame.length))
+      const moved = moveSelection(
+        frame,
+        layers.map((l) => l.placement),
+        delta,
+        b.dir,
+      )
+      pushHistory(`nudge:${get().selection.join(',')}`)
+      setPlacements(new Map(layers.map((l, i) => [l.id, moved[i]!])))
+    },
+
+    transformSelection(op, historyTag) {
+      const t = transformable()
+      if (!t) return
+      const { frame, primary, layers } = t
+      let placements = layers.map((l) => l.placement)
+      const b = selectionBounds(frame, placements, primary.placement)
+      if (op.scale !== undefined) {
+        placements = scaleSelection(frame, placements, b.center, op.scale, b.dir)
+      }
+      if (op.rotate !== undefined) {
+        placements = rotateSelection(frame, placements, b.center, op.rotate, b.dir)
+      }
+      pushHistory(historyTag)
+      setPlacements(new Map(layers.map((l, i) => [l.id, placements[i]!])))
+    },
+
+    selectionBounds() {
+      const frame = engine?.displayFrame()
+      const primary = primaryLayer()
+      const layers = selectedLayers()
+      if (!frame || !primary || !layers.length || get().tab !== 'livery') return null
+      return selectionBounds(
+        frame,
+        layers.map((l) => l.placement),
+        primary.placement,
+      )
+    },
+
+    beginGizmo() {
+      const t = transformable()
+      if (!t) return
+      const placements = t.layers.map((l) => l.placement)
+      gizmo = {
+        ids: t.layers.map((l) => l.id),
+        placements,
+        bounds: selectionBounds(t.frame, placements, t.primary.placement),
+        primaryRotation: t.primary.placement.rotation,
+      }
+      lastHistoryTag = null
+      pushHistory('gizmo')
+    },
+
+    gizmoUpdate({ scale, rotate, snap }) {
+      const g = gizmo
+      const frame = engine?.displayFrame()
+      if (!g || !frame || !engine) return
+      let placements = g.placements
+      if (scale !== undefined) {
+        placements = scaleSelection(
+          frame,
+          placements,
+          g.bounds.center,
+          Math.max(0.02, scale),
+          g.bounds.dir,
+        )
+      }
+      if (rotate !== undefined) {
+        // the camera sees the vinyl from the projector's side unless it looks back at it
+        const facing = vdot(engine.viewer.cameraDirection(), g.bounds.dir) >= 0 ? 1 : -1
+        const wanted = g.primaryRotation + rotate * facing
+        const total = snap ? snapAngle(wanted, 15) : snapAngle(wanted, 90, 3)
+        placements = rotateSelection(
+          frame,
+          placements,
+          g.bounds.center,
+          total - g.primaryRotation,
+          g.bounds.dir,
+        )
+      }
+      setPlacements(new Map(g.ids.map((id, i) => [id, placements[i]!])))
+    },
+
+    endGizmo() {
+      gizmo = null
     },
 
     clearDesign() {
       pushHistory()
-      set({ selectedLayer: null })
       setDesign(EMPTY_DESIGN)
+      setSelection([], null)
     },
 
     undo() {
@@ -860,8 +1175,7 @@ export const useStore = create<State & Actions>((set, get) => {
         future: [snapshot(draft), ...future],
         draft: { ...draft, ...prev },
       })
-      if (!prev.design.layers.some((l) => l.id === get().selectedLayer))
-        set({ selectedLayer: null })
+      pruneSelection()
       refreshOutline()
       void rebake()
     },
@@ -876,8 +1190,7 @@ export const useStore = create<State & Actions>((set, get) => {
         future: future.slice(1),
         draft: { ...draft, ...next },
       })
-      if (!next.design.layers.some((l) => l.id === get().selectedLayer))
-        set({ selectedLayer: null })
+      pruneSelection()
       refreshOutline()
       void rebake()
     },
@@ -939,39 +1252,85 @@ export const useStore = create<State & Actions>((set, get) => {
       engine = controller
       if (controller) {
         controller.setInteraction({
-          down(hit) {
+          down(hit, event) {
             const st = get()
             if (st.tab !== 'livery' || !hit) return false
             const id = controller.layerAt(hit.point, st.draft.design)
             if (!id) return false
-            st.selectLayer(id)
             const layer = st.draft.design.layers.find((l) => l.id === id)!
-            if (layer.locked) return false
+            if (event.ctrlKey || event.metaKey || event.shiftKey) {
+              // add to / remove from the selection; the click does not orbit the camera
+              st.selectLayer(id, 'toggle')
+              drag = null
+              return true
+            }
+            if (!st.selection.includes(id)) {
+              // clicking on the car picks the whole group, like in Forza
+              const ids = layer.group
+                ? groupMembers(st.draft.design, layer.group).map((l) => l.id)
+                : [id]
+              setSelection(ids, id)
+            } else setSelection(st.selection, id)
             const frame = controller.displayFrame()
-            const grabbed = frame ? worldToPosition(frame, hit.point) : layer.placement.position
+            if (layer.locked || !frame) return false
+            const grabbed = worldToPosition(frame, hit.point)
             const p = layer.placement.position
-            drag = { id, offset: [p[0] - grabbed[0], p[1] - grabbed[1], p[2] - grabbed[2]] }
+            drag = {
+              id,
+              offset: [p[0] - grabbed[0], p[1] - grabbed[1], p[2] - grabbed[2]],
+              start: new Map(
+                selectedLayers()
+                  .filter((l) => !l.locked)
+                  .map((l) => [l.id, l.placement]),
+              ),
+              startOrigin: positionToWorld(frame, p),
+              startDir: basis(frame, layer.placement).dir,
+            }
             lastHistoryTag = null
             pushHistory(`drag:${id}`)
             return true
           },
-          move(hit) {
+          move(hit, event) {
             const current = drag
-            if (!current || !hit) return
-            const layer = get().draft.design.layers.find((l) => l.id === current.id)
-            const placed = layer && controller.placeAtHit(layer.placement, hit)
+            const frame = controller.displayFrame()
+            if (!current || !hit || !frame) return
+            const startPlacement = current.start.get(current.id)
+            const placed = startPlacement && controller.placeAtHit(startPlacement, hit)
             if (!placed) return
             const o = current.offset
-            const position: [number, number, number] = [
-              placed.position[0] + o[0],
-              placed.position[1] + o[1],
-              placed.position[2] + o[2],
-            ]
-            get().updatePlacement(
-              current.id,
-              { position, direction: placed.direction },
-              `drag:${current.id}`,
+            const lead: Placement = {
+              ...placed,
+              position: [
+                placed.position[0] + o[0],
+                placed.position[1] + o[1],
+                placed.position[2] + o[2],
+              ],
+            }
+            const delta = vsub(positionToWorld(frame, lead.position), current.startOrigin)
+            const others = [...current.start].filter(([id]) => id !== current.id)
+            const moved = moveSelection(
+              frame,
+              others.map(([, p]) => p),
+              delta,
+              current.startDir,
             )
+            const next = new Map<string, Placement>([[current.id, lead]])
+            others.forEach(([id, p], i) => {
+              // vinyls on the same face follow the lead onto a new face
+              const sameFace = vdot(basis(frame, p).dir, current.startDir) > 0.95
+              next.set(id, sameFace ? { ...moved[i]!, direction: lead.direction } : moved[i]!)
+            })
+            // snap to the centre line on the roof, bonnet, nose and tail (Alt: free)
+            const dir = basis(frame, lead).dir
+            if (!event.altKey && Math.abs(vdot(dir, frame.left)) < 0.7) {
+              const b = selectionBounds(frame, [...next.values()], lead)
+              const cx = worldToPosition(frame, b.center)[0]
+              if (Math.abs(cx) < CENTRE_SNAP) {
+                const shift = vscale(frame.left, (-cx * frame.width) / 2)
+                for (const [id, p] of next) next.set(id, moveSelection(frame, [p], shift, dir)[0]!)
+              }
+            }
+            setPlacements(next)
           },
           up() {
             drag = null
@@ -979,22 +1338,14 @@ export const useStore = create<State & Actions>((set, get) => {
           wheel(e) {
             const st = get()
             if (st.tab !== 'livery' || !(e.shiftKey || e.altKey)) return false
-            const layer = st.draft.design.layers.find((l) => l.id === st.selectedLayer)
-            if (!layer || layer.locked) return false
-            const up = e.deltaY < 0
+            if (!transformable()) return false
+            // Shift turns the wheel into horizontal scrolling in some browsers
+            const up = (e.deltaY || e.deltaX) < 0
+            const key = st.selection.join(',')
             if (e.shiftKey) {
-              const k = up ? 1.06 : 1 / 1.06
-              st.updatePlacement(
-                layer.id,
-                { width: layer.placement.width * k, height: layer.placement.height * k },
-                `wheel-scale:${layer.id}`,
-              )
+              st.transformSelection({ scale: up ? 1.06 : 1 / 1.06 }, `wheel-scale:${key}`)
             } else {
-              st.updatePlacement(
-                layer.id,
-                { rotation: (layer.placement.rotation + (up ? 5 : -5) + 360) % 360 },
-                `wheel-rotate:${layer.id}`,
-              )
+              st.transformSelection({ rotate: up ? 5 : -5 }, `wheel-rotate:${key}`)
             }
             return true
           },
@@ -1009,6 +1360,11 @@ export const useStore = create<State & Actions>((set, get) => {
     },
   }
 })
+
+/** The engine of the mounted viewport (for overlays drawn over the canvas). */
+export function currentEngine(): EngineController | null {
+  return engine
+}
 
 // Autosave: shortly after the draft changes, unsaved work goes to the
 // backend's autosave slot so a crash or a closed window does not lose it.

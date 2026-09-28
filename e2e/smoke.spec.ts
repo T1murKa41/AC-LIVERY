@@ -332,3 +332,68 @@ test('projects save and open, unsaved work is restored after a restart', async (
   await expect(page.locator('.layer-row')).toHaveCount(2)
   await expect(page.locator('.app-bar')).toHaveCount(0)
 })
+
+test('groups scale and rotate together with the handles on the car', async ({ page }) => {
+  await openCar(page)
+  await page.locator('.tabs button').nth(1).click()
+  await page.locator('.view-toolbar button').nth(1).click() // left side, orthographic
+  await page.locator('.add-grid .tool').first().click() // rectangle
+  for (let i = 0; i < 6; i++) await page.keyboard.press('Shift+ArrowRight')
+  await page.locator('.add-grid .tool').nth(5).click() // star
+  for (let i = 0; i < 6; i++) await page.keyboard.press('Shift+ArrowLeft')
+  await page
+    .locator('.layer-row')
+    .nth(1)
+    .click({ modifiers: ['Control'] })
+  await expect(page.locator('.selection-panel h3')).toHaveText(/Выделено: 2|2 selected/)
+  await page.getByRole('button', { name: /^(Сгруппировать|Group)$/ }).click()
+  await expect(page.locator('.group-row')).toHaveCount(1)
+  await expect(page.locator('.layer-row.in-group')).toHaveCount(2)
+
+  const field = (label: RegExp) =>
+    page.locator('.properties .field', { hasText: label }).locator('.mono')
+  const width = field(/Ширина|Width/)
+  const rotation = field(/Поворот|Rotation/)
+  const value = async (l: typeof width) => parseInt((await l.textContent()) ?? '0', 10)
+  const before = await value(width)
+
+  const centre = async () => {
+    const a = (await page.locator('.gizmo-handle.scale').nth(0).boundingBox())!
+    const c = (await page.locator('.gizmo-handle.scale').nth(2).boundingBox())!
+    return { x: (a.x + c.x) / 2 + 6, y: (a.y + c.y) / 2 + 6 }
+  }
+
+  // pull a corner away from the centre: the whole group grows by half
+  const mid = await centre()
+  const corner = (await page.locator('.gizmo-handle.scale').nth(2).boundingBox())!
+  const from = { x: corner.x + 6, y: corner.y + 6 }
+  await page.mouse.move(from.x, from.y)
+  await page.mouse.down()
+  await page.mouse.move(from.x + (from.x - mid.x) * 0.5, from.y + (from.y - mid.y) * 0.5, {
+    steps: 6,
+  })
+  await page.mouse.up()
+  await expect.poll(() => value(width)).toBeGreaterThan(before * 1.3)
+  // the other member grew as well
+  await page.locator('.layer-row.in-group').first().click()
+  await expect.poll(() => value(width)).toBeGreaterThan(before * 1.3)
+
+  // turn the dot a quarter around the centre: the group rotates by 90°
+  await page.locator('.group-row').click()
+  const c2 = await centre()
+  const dot = (await page.locator('.gizmo-handle.rotate').boundingBox())!
+  const start = { x: dot.x + 7, y: dot.y + 7 }
+  const r = Math.hypot(start.x - c2.x, start.y - c2.y)
+  await page.mouse.move(start.x, start.y)
+  await page.mouse.down()
+  for (let i = 1; i <= 9; i++) {
+    const a = Math.atan2(start.y - c2.y, start.x - c2.x) + (i / 9) * (Math.PI / 2)
+    await page.mouse.move(c2.x + Math.cos(a) * r, c2.y + Math.sin(a) * r)
+  }
+  await page.mouse.up()
+  await expect.poll(async () => Math.abs(await value(rotation))).toBe(90)
+
+  await page.getByRole('button', { name: /^(Разгруппировать|Ungroup)$/ }).click()
+  await expect(page.locator('.group-row')).toHaveCount(0)
+  await expect(page.locator('.layer-row')).toHaveCount(2)
+})
