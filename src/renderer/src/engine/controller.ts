@@ -7,11 +7,14 @@ import { carDir, skinDir, type Backend, type CarDetails, type ExportTexture } fr
 import type { CarAnalysis } from '@shared/car/analysis'
 import { canDecodeOnCpu, decodeDdsMip, isDds, parseDds } from '@shared/formats/dds'
 import { aoSourceScore } from '@shared/image/ao'
-import { LiveryBaker, readTexture, uvCoverage, type BakeMesh } from './baker'
+import { LiveryBaker, readTexture, uvCoverage, type BakeLayer, type BakeMesh } from './baker'
+import { hitsProjector, placeAt, projectors, type Frame } from '@shared/design/placement'
+import type { Design, Layer, Placement } from '@shared/design/types'
+import { rasterize, rasterKey } from './vinyl'
 import { extractAoInWorker } from './aoWorker'
 import { parseCarInWorker } from './loadCar'
 import { loadTextureFromBytes, textureSize, type TextureInfo } from './textures'
-import { Viewer, type ViewMode } from './viewer'
+import { Viewer, type InteractionHandler, type RayHit, type ViewMode } from './viewer'
 
 /** 'auto' | 'none' | 'model' | 'skin:<id>' */
 export type AoSource = string
@@ -24,6 +27,9 @@ export interface LiveryParams {
   textures: string[]
   /** Stock skin providing every other texture; null = the model's own textures. */
   baseSkin: string | null
+  design: Design
+  /** Other textures to blank out (e.g. stock sponsor decals). */
+  cleared: string[]
 }
 
 export interface LiveryCandidate {
@@ -50,6 +56,13 @@ export interface AoResolution {
   texture: THREE.Texture | null
 }
 
+/** Stand-in for textures the user blanked out. */
+const TRANSPARENT = (() => {
+  const t = new THREE.DataTexture(new Uint8Array(4), 1, 1)
+  t.needsUpdate = true
+  return t
+})()
+
 function hexToRgb(hex: string): [number, number, number] {
   const m = /^#?([0-9a-f]{6})$/i.exec(hex)
   const v = m ? parseInt(m[1]!, 16) : 0xffffff
@@ -72,6 +85,8 @@ export class EngineController {
   private readonly autoAoPick = new Map<string, AoSource>()
   private candidates: LiveryCandidate[] | null = null
   private painted: string[] = []
+  private cleared: string[] = []
+  private readonly vinyls = new Map<string, { key: string; texture: THREE.CanvasTexture }>()
   private baseSkin: string | null = null
   private lastSkinStatus: SkinTextureStatus[] = []
   private generation = 0
@@ -233,16 +248,16 @@ export class EngineController {
     const key = texture.toLowerCase()
     const car = this.viewer.loadedCar
     if (!car) return []
-    return this.viewer.carMeshes
-      .filter(({ source }) => {
-        const mat = car.materials[source.materialId]
-        const diffuse = mat?.textures.find((t) => t.name === 'txDiffuse')?.texture
-        return diffuse?.toLowerCase() === key
-      })
-      .map(({ mesh, source }) => ({
-        geometry: mesh.geometry,
-        world: new THREE.Matrix4().fromArray(source.world),
-      }))
+    return (
+      this.viewer.carMeshes
+        .filter(({ source }) => {
+          const mat = car.materials[source.materialId]
+          const diffuse = mat?.textures.find((t) => t.name === 'txDiffuse')?.texture
+          return diffuse?.toLowerCase() === key
+        })
+        // display space: vinyls are placed where the user sees them
+        .map(({ mesh }) => ({ geometry: mesh.geometry, world: mesh.matrixWorld.clone() }))
+    )
   }
 
   /** Candidate AO sources for a texture: the model plus every stock skin that has it. */
@@ -368,6 +383,7 @@ export class EngineController {
     const analysis = this.analysis
     if (!analysis) return { aoUsed: 'none' }
     const textures = params.textures.filter((t) => this.viewer.modelTexture(t))
+    const layers = await this.prepareLayers(params.design)
     const baked = new Map<string, THREE.Texture>()
     let aoUsed: AoSource = 'none'
     for (const [i, name] of textures.entries()) {
@@ -387,6 +403,7 @@ export class EngineController {
         ao: ao.texture,
         aoStrength: params.aoStrength,
         alphaSource: alphaInfo?.texture ?? null,
+        layers,
       })
       baked.set(name.toLowerCase(), texture)
     }
@@ -401,13 +418,114 @@ export class EngineController {
         if (info) base.set(name, info.texture)
       }
     }
+    const cleared = params.cleared.filter(
+      (n) => !baked.has(n.toLowerCase()) && this.viewer.modelTexture(n),
+    )
     this.viewer.clearOverrides()
     for (const [name, texture] of base) this.viewer.setOverride(name, texture)
+    for (const name of cleared) this.viewer.setOverride(name, TRANSPARENT)
     for (const name of textures) this.viewer.setOverride(name, baked.get(name.toLowerCase())!)
     this.painted = textures
+    this.cleared = cleared
     this.baseSkin = params.baseSkin
     this.liveryActive = textures.length > 0
     return { aoUsed }
+  }
+
+  // -------------------------------------------------------------------------
+  // Vinyls
+
+  displayFrame(): Frame | null {
+    return this.viewer.displayFrame()
+  }
+
+  /** Rasterizes changed layers and returns the visible ones, bottom first. */
+  private async prepareLayers(design: Design): Promise<BakeLayer[]> {
+    const frame = this.displayFrame()
+    if (!frame) return []
+    const live = new Set(design.layers.map((l) => l.id))
+    for (const [id, v] of this.vinyls) {
+      if (!live.has(id)) {
+        v.texture.dispose()
+        this.vinyls.delete(id)
+      }
+    }
+    const out: BakeLayer[] = []
+    for (const layer of design.layers) {
+      if (!layer.visible || layer.opacity <= 0) continue
+      const texture = await this.vinylTexture(layer, design).catch((err) => {
+        console.error(err)
+        return null
+      })
+      if (!texture) continue
+      out.push({ texture, projectors: projectors(frame, layer.placement), opacity: layer.opacity })
+    }
+    return out
+  }
+
+  private async vinylTexture(layer: Layer, design: Design): Promise<THREE.Texture> {
+    const key = rasterKey(layer, design.assets)
+    const cached = this.vinyls.get(layer.id)
+    if (cached?.key === key) return cached.texture
+    const canvas = await rasterize(layer, design.assets)
+    const texture = new THREE.CanvasTexture(canvas)
+    texture.colorSpace = THREE.NoColorSpace
+    texture.anisotropy = 8
+    texture.minFilter = THREE.LinearMipmapLinearFilter
+    texture.generateMipmaps = true
+    cached?.texture.dispose()
+    this.vinyls.set(layer.id, { key, texture })
+    return texture
+  }
+
+  /** Topmost unlocked-or-not layer whose projector contains the point. */
+  layerAt(point: [number, number, number], design: Design): string | null {
+    const frame = this.displayFrame()
+    if (!frame) return null
+    for (let i = design.layers.length - 1; i >= 0; i--) {
+      const layer = design.layers[i]!
+      if (!layer.visible) continue
+      if (projectors(frame, layer.placement).some((p) => hitsProjector(p, point))) return layer.id
+    }
+    return null
+  }
+
+  /** New placement projected at a hit point, as seen from the camera. */
+  placeAtHit(placement: Placement, hit: RayHit): Placement | null {
+    const frame = this.displayFrame()
+    return frame ? placeAt(frame, placement, hit.point, hit.direction) : null
+  }
+
+  centerHit(): RayHit | null {
+    return this.viewer.raycastCenter()
+  }
+
+  showOutline(layer: Layer | null): void {
+    const frame = this.displayFrame()
+    if (!layer || !frame) {
+      this.viewer.setOutline(null)
+      return
+    }
+    const rects = projectors(frame, layer.placement).map((p, i) => {
+      const s2 = p.axisS[0] ** 2 + p.axisS[1] ** 2 + p.axisS[2] ** 2
+      const t2 = p.axisT[0] ** 2 + p.axisT[1] ** 2 + p.axisT[2] ** 2
+      const sx = p.axisS.map((v) => v / s2) as [number, number, number]
+      const tx = p.axisT.map((v) => v / t2) as [number, number, number]
+      const corner = (a: number, b: number): [number, number, number] => [
+        p.origin[0] + sx[0] * a + tx[0] * b,
+        p.origin[1] + sx[1] * a + tx[1] * b,
+        p.origin[2] + sx[2] * a + tx[2] * b,
+      ]
+      return {
+        corners: [corner(-0.5, -0.5), corner(0.5, -0.5), corner(0.5, 0.5), corner(-0.5, 0.5)],
+        dashed: i > 0,
+      }
+    })
+    this.viewer.setOutline(rects)
+  }
+
+  setInteraction(handler: InteractionHandler | null): void {
+    this.viewer.interaction = handler
   }
 
   /** Baked textures plus the untouched textures of the base skin to copy along. */
@@ -416,15 +534,19 @@ export class EngineController {
     copyFiles?: { fromSkin: string; files: string[] }
   } {
     if (!this.liveryActive || !this.analysis) return { textures: [] }
-    const textures = this.painted.map((name) => ({
+    const textures: ExportTexture[] = this.painted.map((name) => ({
       name,
       ...this.baker.readPixels(name.toLowerCase()),
     }))
+    // blanked textures are written as tiny fully transparent files
+    for (const name of this.cleared) {
+      textures.push({ name, width: 4, height: 4, rgba: new Uint8Array(4 * 4 * 4) })
+    }
     const skin = this.baseSkin ? this.car?.skins.find((s) => s.id === this.baseSkin) : undefined
     if (!skin) return { textures }
-    const painted = new Set(this.painted.map((n) => n.toLowerCase()))
+    const written = new Set(textures.map((t) => t.name.toLowerCase()))
     const files = this.analysis.paintable
-      .filter((n) => !painted.has(n.toLowerCase()))
+      .filter((n) => !written.has(n.toLowerCase()))
       .map((n) => findFile(skin.files, n))
       .filter((f): f is string => !!f)
     return { textures, copyFiles: files.length ? { fromSkin: skin.id, files } : undefined }
@@ -495,6 +617,8 @@ export class EngineController {
   }
 
   dispose(): void {
+    for (const v of this.vinyls.values()) v.texture.dispose()
+    this.vinyls.clear()
     this.generation++
     this.disposeCarResources()
     this.baker.dispose()

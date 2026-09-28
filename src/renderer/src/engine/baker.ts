@@ -20,6 +20,21 @@ export interface BakeMesh {
   world: THREE.Matrix4
 }
 
+/** One projector in display space (see @shared/design/placement). */
+export interface BakeProjector {
+  origin: [number, number, number]
+  axisS: [number, number, number]
+  axisT: [number, number, number]
+  axisR: [number, number, number]
+}
+
+export interface BakeLayer {
+  texture: THREE.Texture
+  /** One projector, or two when the vinyl is mirrored to the other side. */
+  projectors: BakeProjector[]
+  opacity: number
+}
+
 export interface BakeSettings {
   width: number
   height: number
@@ -28,6 +43,8 @@ export interface BakeSettings {
   aoStrength: number
   /** Original texture; its alpha channel is kept. */
   alphaSource: THREE.Texture | null
+  /** Vinyls, bottom first. */
+  layers?: BakeLayer[]
 }
 
 const UV_VERTEX = /* glsl */ `
@@ -50,6 +67,45 @@ varying vec3 vWorldPos;
 varying vec3 vWorldNormal;
 void main() {
   gl_FragColor = vec4(baseColor, 1.0);
+}
+`
+
+// Projects one vinyl onto the texels of the car. Surfaces turned away from
+// the projector fade out, so a sticker on the left door never shows up on the
+// right door or wraps around a sharp edge.
+const LAYER_FRAGMENT = /* glsl */ `
+uniform sampler2D vinyl;
+uniform float opacity;
+uniform int count;
+uniform vec3 origin[2];
+uniform vec3 axisS[2];
+uniform vec3 axisT[2];
+uniform vec3 axisR[2];
+varying vec2 vUv;
+varying vec3 vWorldPos;
+varying vec3 vWorldNormal;
+
+vec4 project(int i) {
+  vec3 q = vWorldPos - origin[i];
+  float s = dot(q, axisS[i]) + 0.5;
+  float t = dot(q, axisT[i]) + 0.5;
+  float r = dot(q, axisR[i]);
+  if (s < 0.0 || s > 1.0 || t < 0.0 || t > 1.0 || abs(r) > 0.5) return vec4(0.0);
+  float facing = dot(normalize(vWorldNormal), -normalize(axisR[i]));
+  vec4 c = texture2D(vinyl, vec2(s, t));
+  c.a *= smoothstep(0.1, 0.3, facing);
+  return c;
+}
+
+void main() {
+  vec4 c = project(0);
+  if (count > 1) {
+    vec4 m = project(1);
+    if (m.a > c.a) c = m;
+  }
+  c.a *= opacity;
+  if (c.a <= 0.0) discard;
+  gl_FragColor = c;
 }
 `
 
@@ -114,6 +170,7 @@ export class LiveryBaker {
   private readonly quad: THREE.Mesh
   private readonly quadScene = new THREE.Scene()
   private readonly designMaterial: THREE.ShaderMaterial
+  private readonly layerMaterial: THREE.ShaderMaterial
   private readonly dilateMaterial: THREE.ShaderMaterial
   private readonly finalMaterial: THREE.ShaderMaterial
   private ping: THREE.WebGLRenderTarget | null = null
@@ -135,6 +192,32 @@ export class LiveryBaker {
       side: THREE.DoubleSide,
       depthTest: false,
       depthWrite: false,
+    })
+    const vec3s = () => [new THREE.Vector3(), new THREE.Vector3()]
+    this.layerMaterial = new THREE.ShaderMaterial({
+      vertexShader: UV_VERTEX,
+      fragmentShader: LAYER_FRAGMENT,
+      uniforms: {
+        world: { value: new THREE.Matrix4() },
+        vinyl: { value: null },
+        opacity: { value: 1 },
+        count: { value: 1 },
+        origin: { value: vec3s() },
+        axisS: { value: vec3s() },
+        axisT: { value: vec3s() },
+        axisR: { value: vec3s() },
+      },
+      side: THREE.DoubleSide,
+      depthTest: false,
+      depthWrite: false,
+      transparent: true,
+      // colour blends over what is below; alpha keeps marking covered texels
+      blending: THREE.CustomBlending,
+      blendEquation: THREE.AddEquation,
+      blendSrc: THREE.SrcAlphaFactor,
+      blendDst: THREE.OneMinusSrcAlphaFactor,
+      blendSrcAlpha: THREE.ZeroFactor,
+      blendDstAlpha: THREE.OneFactor,
     })
     this.dilateMaterial = new THREE.ShaderMaterial({
       vertexShader: QUAD_VERTEX,
@@ -223,6 +306,28 @@ export class LiveryBaker {
       r.render(scene, this.camera)
     }
 
+    // 1b. vinyls, bottom to top, blended over the base colour
+    mesh.material = this.layerMaterial
+    const lu = this.layerMaterial.uniforms
+    for (const layer of settings.layers ?? []) {
+      if (!layer.projectors.length || layer.opacity <= 0) continue
+      lu.vinyl!.value = layer.texture
+      lu.opacity!.value = layer.opacity
+      lu.count!.value = Math.min(2, layer.projectors.length)
+      layer.projectors.slice(0, 2).forEach((p, i) => {
+        lu.origin!.value[i].set(...p.origin)
+        lu.axisS!.value[i].set(...p.axisS)
+        lu.axisT!.value[i].set(...p.axisT)
+        lu.axisR!.value[i].set(...p.axisR)
+      })
+      for (const m of meshes) {
+        mesh.geometry = m.geometry
+        lu.world!.value.copy(m.world)
+        this.layerMaterial.uniformsNeedUpdate = true
+        r.render(scene, this.camera)
+      }
+    }
+
     // 2. dilation (ping-pong)
     this.quad.material = this.dilateMaterial
     this.dilateMaterial.uniforms.texel!.value.set(1 / width, 1 / height)
@@ -268,6 +373,7 @@ export class LiveryBaker {
     this.pong?.dispose()
     this.keepOnly([])
     this.designMaterial.dispose()
+    this.layerMaterial.dispose()
     this.dilateMaterial.dispose()
     this.finalMaterial.dispose()
     this.quad.geometry.dispose()

@@ -12,6 +12,24 @@ THREE.ColorManagement.enabled = false
 
 export type ViewMode = 'perspective' | 'left' | 'right' | 'top' | 'front' | 'rear'
 
+export interface RayHit {
+  /** Display-space point on the car surface. */
+  point: [number, number, number]
+  /** Direction of the ray (from the camera into the car). */
+  direction: [number, number, number]
+  meshIndex: number
+}
+
+/** Lets the app take over mouse input on the car (e.g. to drag a vinyl). */
+export interface InteractionHandler {
+  /** Return true to capture the drag (camera controls pause until release). */
+  down(hit: RayHit | null, event: PointerEvent): boolean
+  move(hit: RayHit | null, event: PointerEvent): void
+  up(): void
+  /** Return true if the wheel event was used (the camera does not zoom). */
+  wheel(event: WheelEvent): boolean
+}
+
 export interface CarMesh {
   mesh: THREE.Mesh
   source: LoadedMesh
@@ -76,6 +94,9 @@ export class Viewer {
   private pointerDown: { x: number; y: number } | null = null
   /** Called with the kn5 mesh index under the cursor after a click (null = empty space). */
   onPick: ((meshIndex: number | null) => void) | null = null
+  interaction: InteractionHandler | null = null
+  private dragging = false
+  private outline: THREE.Group | null = null
   private readonly resizeObserver: ResizeObserver
 
   constructor(private readonly canvas: HTMLCanvasElement) {
@@ -105,15 +126,46 @@ export class Viewer {
     this.background.renderOrder = -1000
     this.scene.add(this.background)
 
-    canvas.addEventListener('pointerdown', (e) => {
-      this.pointerDown = { x: e.clientX, y: e.clientY }
+    // capture phase: runs before OrbitControls, which listens on the same element
+    canvas.addEventListener(
+      'pointerdown',
+      (e) => {
+        this.pointerDown = { x: e.clientX, y: e.clientY }
+        if (e.button !== 0 || !this.interaction) return
+        if (this.interaction.down(this.raycast(e.clientX, e.clientY), e)) {
+          this.dragging = true
+          this.controls.enabled = false
+          canvas.setPointerCapture(e.pointerId)
+        }
+      },
+      { capture: true },
+    )
+    canvas.addEventListener('pointermove', (e) => {
+      if (this.dragging) this.interaction?.move(this.raycast(e.clientX, e.clientY), e)
     })
     canvas.addEventListener('pointerup', (e) => {
       const down = this.pointerDown
       this.pointerDown = null
+      if (this.dragging) {
+        this.dragging = false
+        this.controls.enabled = true
+        if (canvas.hasPointerCapture(e.pointerId)) canvas.releasePointerCapture(e.pointerId)
+        this.interaction?.up()
+        return
+      }
       if (!down || Math.hypot(e.clientX - down.x, e.clientY - down.y) > 4) return
       this.onPick?.(this.pick(e.clientX, e.clientY))
     })
+    canvas.addEventListener(
+      'wheel',
+      (e) => {
+        if (this.interaction?.wheel(e)) {
+          e.preventDefault()
+          e.stopImmediatePropagation()
+        }
+      },
+      { capture: true, passive: false },
+    )
 
     this.resizeObserver = new ResizeObserver(() => this.resize())
     this.resizeObserver.observe(canvas)
@@ -246,6 +298,7 @@ export class Viewer {
 
   private clearCar(): void {
     this.highlightMesh(null)
+    this.setOutline(null)
     if (this.carRoot) {
       this.scene.remove(this.carRoot)
       for (const { mesh } of this.meshes) mesh.geometry.dispose()
@@ -304,6 +357,99 @@ export class Viewer {
     this.showHidden = show
     for (const { mesh, source } of this.meshes) mesh.visible = show || !source.hidden
     this.requestRender()
+  }
+
+  /** Ray from the camera through a client point, hitting the visible car. */
+  raycast(clientX: number, clientY: number): RayHit | null {
+    if (!this.carRoot) return null
+    const rect = this.canvas.getBoundingClientRect()
+    const ndc = new THREE.Vector2(
+      ((clientX - rect.left) / rect.width) * 2 - 1,
+      -((clientY - rect.top) / rect.height) * 2 + 1,
+    )
+    this.raycaster.setFromCamera(ndc, this.camera)
+    const hit = this.raycaster.intersectObjects(
+      this.meshes.filter((m) => m.mesh.visible).map((m) => m.mesh),
+      false,
+    )[0]
+    if (!hit) return null
+    const d = this.raycaster.ray.direction
+    return {
+      point: [hit.point.x, hit.point.y, hit.point.z],
+      direction: [d.x, d.y, d.z],
+      meshIndex: hit.object.userData.index as number,
+    }
+  }
+
+  /** Ray through the centre of the viewport. */
+  raycastCenter(): RayHit | null {
+    const rect = this.canvas.getBoundingClientRect()
+    return this.raycast(rect.left + rect.width / 2, rect.top + rect.height / 2)
+  }
+
+  /**
+   * Draws the outline of the selected vinyl: one rectangle per projector
+   * (the mirrored copy dashed), always on top.
+   */
+  setOutline(rects: { corners: [number, number, number][]; dashed: boolean }[] | null): void {
+    if (this.outline) {
+      this.scene.remove(this.outline)
+      this.outline.traverse((o) => {
+        if (o instanceof THREE.Line) {
+          o.geometry.dispose()
+          ;(o.material as THREE.Material).dispose()
+        }
+      })
+      this.outline = null
+    }
+    if (rects?.length) {
+      const group = new THREE.Group()
+      for (const r of rects) {
+        const geometry = new THREE.BufferGeometry().setFromPoints(
+          r.corners.map((c) => new THREE.Vector3(...c)),
+        )
+        const material = r.dashed
+          ? new THREE.LineDashedMaterial({
+              color: 0xff5b1f,
+              dashSize: 0.05,
+              gapSize: 0.04,
+              depthTest: false,
+            })
+          : new THREE.LineBasicMaterial({ color: 0xff5b1f, depthTest: false })
+        const line = new THREE.LineLoop(geometry, material)
+        if (r.dashed) line.computeLineDistances()
+        line.renderOrder = 1000
+        group.add(line)
+      }
+      this.outline = group
+      this.scene.add(group)
+    }
+    this.requestRender()
+  }
+
+  /** Display-space car frame (the model's frame with mirroring undone). */
+  displayFrame(): {
+    origin: [number, number, number]
+    forward: [number, number, number]
+    left: [number, number, number]
+    up: [number, number, number]
+    length: number
+    width: number
+    height: number
+  } | null {
+    const f = this.frame
+    if (!f) return null
+    const v = (x: [number, number, number]) =>
+      this.toDisplay(x).toArray() as [number, number, number]
+    return {
+      origin: v(f.origin),
+      forward: v(f.forward),
+      left: v(f.left),
+      up: [0, 1, 0],
+      length: f.length,
+      width: f.width,
+      height: f.height,
+    }
   }
 
   /** Returns the kn5 mesh index at the given client coordinates. */

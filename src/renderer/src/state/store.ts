@@ -21,6 +21,27 @@ import {
   type SkinTextureStatus,
 } from '../engine/controller'
 import { buildReport, describeMesh } from '../engine/report'
+import { fileToDataUrl, fontFamily, imageAspect, textAspect } from '../engine/vinyl'
+import { worldToPosition } from '@shared/design/placement'
+import {
+  DEFAULT_PLACEMENT,
+  EMPTY_DESIGN,
+  FONT_ASSET_PREFIX,
+  duplicateLayer,
+  newId,
+  newImageLayer,
+  newShapeLayer,
+  newTextLayer,
+  pruneAssets,
+  type Asset,
+  type Design,
+  type ImageLayer,
+  type Layer,
+  type Placement,
+  type ShapeKind,
+  type ShapeLayer,
+  type TextLayer,
+} from '@shared/design/types'
 import type { ViewMode } from '../engine/viewer'
 import i18n from '../i18n'
 
@@ -37,6 +58,8 @@ export interface LiveryDraft {
   liveryTextures: 'auto' | string[]
   /** Skin for the remaining textures: 'auto' = the skin shown on the Skins tab. */
   baseSkin: 'auto' | 'model' | string
+  /** Textures from the base skin to blank out, e.g. stock sponsor decals. */
+  clearedTextures: string[]
   baseColor: string
   aoSource: AoSource
   aoStrength: number
@@ -44,6 +67,7 @@ export interface LiveryDraft {
   /** The user edited the folder name by hand; stop deriving it from the name. */
   skinIdTouched: boolean
   meta: LiveryMeta
+  design: Design
 }
 
 export type LoadState =
@@ -64,13 +88,23 @@ export type PanelTab = 'skins' | 'livery' | 'info'
 export const DEFAULT_DRAFT: LiveryDraft = {
   liveryTextures: 'auto',
   baseSkin: 'auto',
+  clearedTextures: [],
   baseColor: '#d7261e',
   aoSource: 'auto',
   aoStrength: 0.85,
   skinId: 'my_livery',
   skinIdTouched: false,
   meta: { skinname: 'My Livery', drivername: '', team: '', number: '', country: '' },
+  design: EMPTY_DESIGN,
 }
+
+/** Part of the draft covered by undo/redo. */
+interface Snapshot {
+  baseColor: string
+  design: Design
+}
+
+export type LiveryPanel = 'design' | 'base' | 'save'
 
 interface State {
   backend: Backend
@@ -96,6 +130,11 @@ interface State {
   showHidden: boolean
   liveryCandidates: LiveryCandidate[]
   autoLivery: string[]
+  liveryPanel: LiveryPanel
+  selectedLayer: string | null
+  past: Snapshot[]
+  future: Snapshot[]
+  designError: string | null
 }
 
 interface Actions {
@@ -123,10 +162,35 @@ interface Actions {
   paintedTextures(): string[]
   /** Skin whose textures are kept for everything else (null = model). */
   baseSkinId(): string | null
+  setLiveryPanel(panel: LiveryPanel): void
+  // design editing
+  addShape(shape: ShapeKind): void
+  addText(text?: string): Promise<void>
+  addImage(file: File): Promise<void>
+  importFont(file: File): Promise<string | null>
+  selectLayer(id: string | null): void
+  updateLayer(id: string, patch: LayerPatch): Promise<void>
+  updatePlacement(id: string, patch: Partial<Placement>, historyTag?: string): void
+  removeLayer(id: string): void
+  duplicateLayer(id: string): void
+  moveLayer(id: string, delta: number): void
+  clearDesign(): void
+  undo(): void
+  redo(): void
   attachEngine(controller: EngineController | null): void
 }
 
+/** Visual properties of any layer kind that can be edited. */
+export type LayerPatch = Partial<
+  Omit<ShapeLayer, 'kind' | 'id' | 'placement'> &
+    Omit<TextLayer, 'kind' | 'id' | 'placement'> &
+    Omit<ImageLayer, 'kind' | 'id' | 'placement'>
+>
+
 let engine: EngineController | null = null
+let lastHistoryTag: string | null = null
+let lastHistoryAt = 0
+let drag: { id: string; offset: [number, number, number] } | null = null
 let bakeQueued = false
 let bakeRunning: Promise<void> | null = null
 
@@ -144,6 +208,8 @@ export const useStore = create<State & Actions>((set, get) => {
         aoStrength: draft.aoStrength,
         textures: get().paintedTextures(),
         baseSkin: get().baseSkinId(),
+        design: draft.design,
+        cleared: draft.clearedTextures ?? [],
       })
       set({ aoStatus: 'ready', aoUsed })
       if (get().highlight) engine.highlightTextures(get().paintedTextures())
@@ -170,6 +236,66 @@ export const useStore = create<State & Actions>((set, get) => {
     return bakeRunning
   }
 
+  /**
+   * Saves the current design for undo. Repeated changes with the same tag in
+   * quick succession (slider drags, wheel steps) form one undo step.
+   */
+  const pushHistory = (tag: string | null = null): void => {
+    const now = Date.now()
+    if (tag && tag === lastHistoryTag && now - lastHistoryAt < 700) {
+      lastHistoryAt = now
+      return
+    }
+    lastHistoryTag = tag
+    lastHistoryAt = now
+    const { draft, past } = get()
+    set({
+      past: [...past, { baseColor: draft.baseColor, design: draft.design }].slice(-100),
+      future: [],
+    })
+  }
+
+  const refreshOutline = (): void => {
+    const { tab, selectedLayer, draft } = get()
+    const layer = draft.design.layers.find((l) => l.id === selectedLayer) ?? null
+    engine?.showOutline(tab === 'livery' ? layer : null)
+  }
+
+  const setDesign = (design: Design): void => {
+    set({ draft: { ...get().draft, design }, exportState: { status: 'idle' } })
+    refreshOutline()
+    void rebake()
+  }
+
+  const mapLayer = (id: string, fn: (l: Layer) => Layer): void => {
+    const design = get().draft.design
+    setDesign({ ...design, layers: design.layers.map((l) => (l.id === id ? fn(l) : l)) })
+  }
+
+  /** Where a new vinyl goes: the spot on the car in the middle of the view. */
+  const initialPlacement = (width: number): Placement => {
+    const base = { ...DEFAULT_PLACEMENT, width }
+    const hit = engine?.centerHit()
+    return (hit && engine?.placeAtHit(base, hit)) || base
+  }
+
+  const addLayer = (layer: Layer): void => {
+    pushHistory()
+    const design = get().draft.design
+    set({ selectedLayer: layer.id })
+    setDesign({ ...design, layers: [...design.layers, layer] })
+  }
+
+  const addAsset = (id: string, asset: Asset): void => {
+    const draft = get().draft
+    set({
+      draft: {
+        ...draft,
+        design: { ...draft.design, assets: { ...draft.design.assets, [id]: asset } },
+      },
+    })
+  }
+
   return {
     backend: createBackend(),
     settings: null,
@@ -194,6 +320,11 @@ export const useStore = create<State & Actions>((set, get) => {
     showHidden: false,
     liveryCandidates: [],
     autoLivery: [],
+    liveryPanel: 'design',
+    selectedLayer: null,
+    past: [],
+    future: [],
+    designError: null,
 
     async init() {
       const settings = await get().backend.getSettings()
@@ -311,6 +442,7 @@ export const useStore = create<State & Actions>((set, get) => {
       set({ tab })
       if (tab !== 'info' && get().pickedMesh !== null) get().clearPick()
       if (tab === 'livery' && prev !== 'livery') void rebake()
+      refreshOutline()
       if (tab !== 'livery' && prev === 'livery') void get().showSkin(get().shownSkin)
     },
 
@@ -332,9 +464,12 @@ export const useStore = create<State & Actions>((set, get) => {
         const project = asRecord(marker.project)
         const draft = { ...DEFAULT_DRAFT, ...(project.draft as Partial<LiveryDraft>) }
         set({
-          draft: { ...draft, skinId, skinIdTouched: true },
+          draft: { ...draft, design: draft.design ?? EMPTY_DESIGN, skinId, skinIdTouched: true },
           tab: 'livery',
           exportState: { status: 'idle' },
+          selectedLayer: null,
+          past: [],
+          future: [],
         })
         void rebake()
       } catch (err) {
@@ -343,6 +478,7 @@ export const useStore = create<State & Actions>((set, get) => {
     },
 
     updateDraft(patch) {
+      if (patch.baseColor !== undefined) pushHistory('baseColor')
       const prev = get().draft
       const meta = { ...prev.meta, ...patch.meta }
       const next: LiveryDraft = { ...prev, ...patch, meta }
@@ -356,7 +492,8 @@ export const useStore = create<State & Actions>((set, get) => {
         patch.aoSource !== undefined ||
         patch.aoStrength !== undefined ||
         patch.liveryTextures !== undefined ||
-        patch.baseSkin !== undefined
+        patch.baseSkin !== undefined ||
+        patch.clearedTextures !== undefined
       ) {
         void rebake()
       }
@@ -495,9 +632,222 @@ export const useStore = create<State & Actions>((set, get) => {
       return loaded && index !== null ? describeMesh(loaded, index) : []
     },
 
+    setLiveryPanel(liveryPanel) {
+      set({ liveryPanel })
+    },
+
+    addShape(shape) {
+      addLayer(newShapeLayer(shape, initialPlacement(0.18), '#ffffff'))
+    },
+
+    async addText(text = '00') {
+      const layer = newTextLayer(text, initialPlacement(0.2), 1)
+      try {
+        const aspect = await textAspect(layer, get().draft.design.assets)
+        layer.placement = { ...layer.placement, height: layer.placement.width / aspect }
+      } catch (err) {
+        console.error(err)
+      }
+      addLayer(layer)
+    },
+
+    async addImage(file) {
+      try {
+        const data = await fileToDataUrl(file)
+        const asset: Asset = { name: file.name, mime: file.type || 'image/png', data }
+        const aspect = await imageAspect(asset)
+        const id = newId('a')
+        addAsset(id, asset)
+        const name = file.name.replace(/\.[^.]+$/, '')
+        addLayer(newImageLayer(id, name, initialPlacement(0.2), aspect))
+        set({ designError: null })
+      } catch (err) {
+        set({ designError: err instanceof Error ? err.message : String(err) })
+      }
+    },
+
+    async importFont(file) {
+      try {
+        const data = await fileToDataUrl(file)
+        const id = newId('f')
+        const name = file.name.replace(/\.[^.]+$/, '')
+        const asset: Asset = { name, mime: file.type || 'font/ttf', data }
+        await fontFamily(`${FONT_ASSET_PREFIX}${id}`, { [id]: asset })
+        addAsset(id, asset)
+        set({ designError: null })
+        return `${FONT_ASSET_PREFIX}${id}`
+      } catch (err) {
+        set({ designError: err instanceof Error ? err.message : String(err) })
+        return null
+      }
+    },
+
+    selectLayer(id) {
+      set({ selectedLayer: id })
+      refreshOutline()
+    },
+
+    async updateLayer(id, patch) {
+      const layer = get().draft.design.layers.find((l) => l.id === id)
+      if (!layer) return
+      pushHistory(`${id}:${Object.keys(patch).sort().join(',')}`)
+      let next = { ...layer, ...patch } as Layer
+      const reshapes = ['text', 'font', 'bold', 'italic', 'outline'].some((k) => k in patch)
+      if (next.kind === 'text' && reshapes) {
+        if ('text' in patch && layer.name === (layer as TextLayer).text) {
+          next = { ...next, name: next.text || '…' }
+        }
+        try {
+          const aspect = await textAspect(next, get().draft.design.assets)
+          next = {
+            ...next,
+            placement: { ...next.placement, height: next.placement.width / aspect },
+          }
+        } catch (err) {
+          console.error(err)
+        }
+      }
+      mapLayer(id, () => next)
+    },
+
+    updatePlacement(id, patch, historyTag) {
+      pushHistory(historyTag ?? `${id}:placement:${Object.keys(patch).sort().join(',')}`)
+      mapLayer(id, (l) => ({ ...l, placement: { ...l.placement, ...patch } }))
+    },
+
+    removeLayer(id) {
+      pushHistory()
+      const design = get().draft.design
+      if (get().selectedLayer === id) set({ selectedLayer: null })
+      setDesign(pruneAssets({ ...design, layers: design.layers.filter((l) => l.id !== id) }))
+    },
+
+    duplicateLayer(id) {
+      const design = get().draft.design
+      const index = design.layers.findIndex((l) => l.id === id)
+      if (index < 0) return
+      pushHistory()
+      const copy = duplicateLayer(design.layers[index]!)
+      const layers = [...design.layers]
+      layers.splice(index + 1, 0, copy)
+      set({ selectedLayer: copy.id })
+      setDesign({ ...design, layers })
+    },
+
+    moveLayer(id, delta) {
+      const design = get().draft.design
+      const index = design.layers.findIndex((l) => l.id === id)
+      const target = index + delta
+      if (index < 0 || target < 0 || target >= design.layers.length) return
+      pushHistory()
+      const layers = [...design.layers]
+      const [layer] = layers.splice(index, 1)
+      layers.splice(target, 0, layer!)
+      setDesign({ ...design, layers })
+    },
+
+    clearDesign() {
+      pushHistory()
+      set({ selectedLayer: null })
+      setDesign(EMPTY_DESIGN)
+    },
+
+    undo() {
+      const { past, future, draft } = get()
+      const prev = past.at(-1)
+      if (!prev) return
+      lastHistoryTag = null
+      set({
+        past: past.slice(0, -1),
+        future: [{ baseColor: draft.baseColor, design: draft.design }, ...future],
+        draft: { ...draft, baseColor: prev.baseColor, design: prev.design },
+      })
+      if (!prev.design.layers.some((l) => l.id === get().selectedLayer))
+        set({ selectedLayer: null })
+      refreshOutline()
+      void rebake()
+    },
+
+    redo() {
+      const { past, future, draft } = get()
+      const next = future[0]
+      if (!next) return
+      lastHistoryTag = null
+      set({
+        past: [...past, { baseColor: draft.baseColor, design: draft.design }],
+        future: future.slice(1),
+        draft: { ...draft, baseColor: next.baseColor, design: next.design },
+      })
+      if (!next.design.layers.some((l) => l.id === get().selectedLayer))
+        set({ selectedLayer: null })
+      refreshOutline()
+      void rebake()
+    },
+
     attachEngine(controller) {
       engine = controller
       if (controller) {
+        controller.setInteraction({
+          down(hit) {
+            const st = get()
+            if (st.tab !== 'livery' || !hit) return false
+            const id = controller.layerAt(hit.point, st.draft.design)
+            if (!id) return false
+            st.selectLayer(id)
+            const layer = st.draft.design.layers.find((l) => l.id === id)!
+            if (layer.locked) return false
+            const frame = controller.displayFrame()
+            const grabbed = frame ? worldToPosition(frame, hit.point) : layer.placement.position
+            const p = layer.placement.position
+            drag = { id, offset: [p[0] - grabbed[0], p[1] - grabbed[1], p[2] - grabbed[2]] }
+            lastHistoryTag = null
+            pushHistory(`drag:${id}`)
+            return true
+          },
+          move(hit) {
+            const current = drag
+            if (!current || !hit) return
+            const layer = get().draft.design.layers.find((l) => l.id === current.id)
+            const placed = layer && controller.placeAtHit(layer.placement, hit)
+            if (!placed) return
+            const o = current.offset
+            const position: [number, number, number] = [
+              placed.position[0] + o[0],
+              placed.position[1] + o[1],
+              placed.position[2] + o[2],
+            ]
+            get().updatePlacement(
+              current.id,
+              { position, direction: placed.direction },
+              `drag:${current.id}`,
+            )
+          },
+          up() {
+            drag = null
+          },
+          wheel(e) {
+            const st = get()
+            if (st.tab !== 'livery' || !(e.shiftKey || e.altKey)) return false
+            const layer = st.draft.design.layers.find((l) => l.id === st.selectedLayer)
+            if (!layer || layer.locked) return false
+            const up = e.deltaY < 0
+            if (e.shiftKey) {
+              const k = up ? 1.06 : 1 / 1.06
+              st.updatePlacement(
+                layer.id,
+                { width: layer.placement.width * k, height: layer.placement.height * k },
+                `wheel-scale:${layer.id}`,
+              )
+            } else {
+              st.updatePlacement(
+                layer.id,
+                { rotation: (layer.placement.rotation + (up ? 5 : -5) + 360) % 360 },
+                `wheel-rotate:${layer.id}`,
+              )
+            }
+            return true
+          },
+        })
         controller.onPick = (index) => {
           // picking is a diagnostics tool of the Model tab for now
           if (get().tab !== 'info') return

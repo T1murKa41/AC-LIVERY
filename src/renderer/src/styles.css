@@ -812,3 +812,151 @@ button.skin-item {
   border-radius: 2px;
   background: var(--accent);
 }
+
+/* ---------------------------------------------------------------- livery */
+
+.livery {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.segmented.wide {
+  display: flex;
+  margin: 10px 14px 0;
+}
+
+.segmented.wide button {
+  flex: 1;
+  padding: 6px 8px;
+}
+
+.livery-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.livery .export {
+  border-top: 1px solid var(--border);
+  background: var(--panel);
+}
+
+.row.wrap {
+  flex-wrap: wrap;
+}
+
+.section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.add-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(34px, 1fr));
+  gap: 6px;
+}
+
+.tool {
+  display: grid;
+  place-items: center;
+  height: 34px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel-2);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.tool:hover:not(:disabled) {
+  border-color: var(--border-strong);
+  background: var(--panel-3);
+}
+
+.tool.active {
+  border-color: var(--accent);
+  color: var(--accent-hover);
+}
+
+.icon-btn {
+  display: inline-grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.icon-btn:hover:not(:disabled) {
+  background: var(--panel-3);
+  color: var(--text);
+}
+
+.icon-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.icon-btn.on {
+  color: var(--warn);
+}
+
+.layer-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.layer-row {
+  display: grid;
+  grid-template-columns: auto 22px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 4px;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+
+.layer-row:hover {
+  background: var(--panel-2);
+}
+
+.layer-row.selected {
+  border-color: rgba(255, 91, 31, 0.5);
+  background: var(--accent-soft);
+}
+
+.layer-row.hidden .layer-name,
+.layer-row.hidden .layer-kind {
+  opacity: 0.45;
+}
+
+.layer-kind {
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.layer-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.properties {
+  background: var(--panel-2);
+}
+
+.texture-list.compact {
+  gap: 4px;
+}
