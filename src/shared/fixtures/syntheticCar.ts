@@ -402,6 +402,45 @@ function paintDecal(rgb: [number, number, number]): RgbaImage {
 
 export const DECAL_TEXTURE = 'decals.dds'
 
+/**
+ * A thin vertical fin on the rear deck, 2 cm thick, like the engine cover
+ * fins of LMP cars. Its two faces use separate UV rectangles (u0, v0, u1, v1).
+ */
+export const FIN = {
+  x: 0.01,
+  y0: 0.9,
+  y1: 1.25,
+  z0: -2.2,
+  z1: -1.2,
+  uvLeft: [0.02, 0.355, 0.48, 0.395] as const,
+  uvRight: [0.52, 0.355, 0.98, 0.395] as const,
+}
+
+function buildFin(): MeshBuilder {
+  const m = newBuilder()
+  for (const right of [false, true]) {
+    const x = right ? -FIN.x : FIN.x
+    const [u0, v0, u1, v1] = right ? FIN.uvRight : FIN.uvLeft
+    quad(
+      m,
+      [
+        [x, FIN.y1, FIN.z0],
+        [x, FIN.y1, FIN.z1],
+        [x, FIN.y0, FIN.z1],
+        [x, FIN.y0, FIN.z0],
+      ],
+      [
+        [u0, v0],
+        [u1, v0],
+        [u1, v1],
+        [u0, v1],
+      ],
+      [right ? -1 : 1, 0, 0],
+    )
+  }
+  return m
+}
+
 // ---------------------------------------------------------------------------
 
 export interface SyntheticCarOptions {
@@ -413,6 +452,8 @@ export interface SyntheticCarOptions {
    * visible paint is then not the one with the most "body" area.
    */
   overlayLivery?: boolean
+  /** Adds a thin fin on the rear deck (see FIN). */
+  fin?: boolean
 }
 
 export const OVERLAY_TEXTURE = 'Livery.dds'
@@ -518,6 +559,7 @@ export function buildSyntheticCar(options: SyntheticCarOptions = {}): SyntheticC
           ...(options.overlayLivery
             ? [meshNode('BODY_LIVERY', 4, offsetAlongNormals(buildBody(false), 0.004))]
             : []),
+          ...(options.fin ? [meshNode('BODY_FIN', 0, buildFin())] : []),
         ],
       },
       wheel('WHEEL_LF', HALF_W + 0.01, 1.45),

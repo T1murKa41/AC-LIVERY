@@ -51,6 +51,12 @@ export interface BakeSettings {
   fillFromSource?: boolean
   /** Vinyls, bottom first. */
   layers?: BakeLayer[]
+  /**
+   * Surfaces that hide what is behind them from a projector; defaults to
+   * `meshes`. Pass every repainted mesh so a thin fin painted from one side
+   * does not show through on the other.
+   */
+  occluders?: BakeMesh[]
 }
 
 // uvOffset moves one UV tile into 0..1 (see uvTiles).
@@ -94,30 +100,50 @@ uniform vec3 origin[2];
 uniform vec3 axisS[2];
 uniform vec3 axisT[2];
 uniform vec3 axisR[2];
+// Depth of the nearest repainted surface as seen by each projector.
+uniform sampler2D depth0;
+uniform sampler2D depth1;
+uniform mat4 depthMatrix0;
+uniform mat4 depthMatrix1;
+// world size of a depth texel, projector depth (metres)
+uniform vec2 depthScale0;
+uniform vec2 depthScale1;
 varying vec2 vUv;
 varying vec3 vWorldPos;
 varying vec3 vWorldNormal;
 
-// No early returns or dynamic array indexing around the texture fetch: the
-// sample must happen in uniform control flow, otherwise some Direct3D
-// translations of WebGL drop or miscompile it.
-vec4 project(vec3 o, vec3 as, vec3 at, vec3 ar) {
+// 1 if this point is the first surface the projector meets. Slanted surfaces
+// get more slack: neighbouring depth texels differ more there.
+float unoccluded(sampler2D map, mat4 m, vec2 scale, float facing) {
+  vec4 c = m * vec4(vWorldPos, 1.0);
+  vec2 uv = clamp(c.xy * 0.5 + 0.5, 0.0, 1.0);
+  float z = c.z * 0.5 + 0.5;
+  float nearest = texture2D(map, uv).r;
+  float slope = sqrt(max(0.0, 1.0 - facing * facing)) / max(facing, 0.1);
+  float bias = (0.004 + scale.x * 1.5 * slope) / scale.y;
+  return step(z, nearest + bias);
+}
+
+// No early returns or dynamic array indexing around the texture fetches: the
+// samples must happen in uniform control flow, otherwise some Direct3D
+// translations of WebGL drop or miscompile them.
+vec4 project(vec3 o, vec3 as, vec3 at, vec3 ar, sampler2D map, mat4 m, vec2 scale) {
   vec3 q = vWorldPos - o;
   vec2 st = vec2(dot(q, as), dot(q, at)) + 0.5;
   float r = dot(q, ar);
   vec2 in2 = step(vec2(0.0), st) * step(st, vec2(1.0));
   float inside = in2.x * in2.y * step(abs(r), 0.5);
-  // abs(): some models have flipped normals on mirrored halves; the depth
-  // limit already keeps vinyls from reaching the other side of the car
+  // abs(): normals may be flipped on some models; surfaces behind others are
+  // rejected by the depth test instead
   float facing = abs(dot(normalize(vWorldNormal), normalize(ar)));
   vec4 c = texture2D(vinyl, clamp(st, 0.0, 1.0));
-  c.a *= inside * smoothstep(0.1, 0.3, facing);
+  c.a *= inside * smoothstep(0.1, 0.3, facing) * unoccluded(map, m, scale, facing);
   return c;
 }
 
 void main() {
-  vec4 c = project(origin[0], axisS[0], axisT[0], axisR[0]);
-  vec4 m = project(origin[1], axisS[1], axisT[1], axisR[1]);
+  vec4 c = project(origin[0], axisS[0], axisT[0], axisR[0], depth0, depthMatrix0, depthScale0);
+  vec4 m = project(origin[1], axisS[1], axisT[1], axisR[1], depth1, depthMatrix1, depthScale1);
   m.a *= step(1.5, float(count));
   c = m.a > c.a ? m : c;
   if (useFlat) c.rgb = flatColor;
@@ -177,6 +203,8 @@ void main() {
 `
 
 const DILATE_PASSES = 8
+/** Resolution of the per-projector depth maps used to find the first surface. */
+const DEPTH_SIZE = 1024
 
 /** Bound to samplers that have nothing to sample, so every sampler is valid. */
 const WHITE = (() => {
@@ -263,6 +291,14 @@ export class LiveryBaker {
   private readonly layerMaterial: THREE.ShaderMaterial
   private readonly dilateMaterial: THREE.ShaderMaterial
   private readonly finalMaterial: THREE.ShaderMaterial
+  private depthTargets: THREE.WebGLRenderTarget[] = []
+  private readonly depthCamera = new THREE.OrthographicCamera()
+  private readonly depthMaterial = new THREE.ShaderMaterial({
+    vertexShader: `void main() { gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+    fragmentShader: `void main() { gl_FragColor = vec4(1.0); }`,
+    side: THREE.DoubleSide,
+    colorWrite: false,
+  })
   private ping: THREE.WebGLRenderTarget | null = null
   private pong: THREE.WebGLRenderTarget | null = null
   /** One mipmapped result per texture name; kept across bakes of the same size. */
@@ -302,6 +338,12 @@ export class LiveryBaker {
         axisS: { value: vec3s() },
         axisT: { value: vec3s() },
         axisR: { value: vec3s() },
+        depth0: { value: null },
+        depth1: { value: null },
+        depthMatrix0: { value: new THREE.Matrix4() },
+        depthMatrix1: { value: new THREE.Matrix4() },
+        depthScale0: { value: new THREE.Vector2(1, 1) },
+        depthScale1: { value: new THREE.Vector2(1, 1) },
       },
       side: THREE.DoubleSide,
       depthTest: false,
@@ -365,6 +407,60 @@ export class LiveryBaker {
     return output
   }
 
+  private depthTarget(index: number): THREE.WebGLRenderTarget {
+    let target = this.depthTargets[index]
+    if (!target) {
+      const depthTexture = new THREE.DepthTexture(DEPTH_SIZE, DEPTH_SIZE, THREE.UnsignedIntType)
+      depthTexture.minFilter = THREE.NearestFilter
+      depthTexture.magFilter = THREE.NearestFilter
+      target = new THREE.WebGLRenderTarget(DEPTH_SIZE, DEPTH_SIZE, {
+        depthBuffer: true,
+        depthTexture,
+        generateMipmaps: false,
+      })
+      this.depthTargets[index] = target
+    }
+    return target
+  }
+
+  /**
+   * Renders the depth of the occluders as seen by a projector, looking along
+   * its direction from the near end of its box. Returns the matrix that maps
+   * world points to the depth map and its scale (texel size, depth range).
+   */
+  private renderDepth(
+    scene: THREE.Scene,
+    p: BakeProjector,
+    target: THREE.WebGLRenderTarget,
+  ): { matrix: THREE.Matrix4; scale: THREE.Vector2 } {
+    const len = (v: [number, number, number]) => Math.hypot(v[0], v[1], v[2])
+    const w = 1 / len(p.axisS)
+    const h = 1 / len(p.axisT)
+    const d = 1 / len(p.axisR)
+    const origin = new THREE.Vector3(...p.origin)
+    const dir = new THREE.Vector3(...p.axisR).multiplyScalar(d)
+    const cam = this.depthCamera
+    cam.left = -w / 2
+    cam.right = w / 2
+    cam.top = h / 2
+    cam.bottom = -h / 2
+    cam.near = 0
+    cam.far = d
+    cam.updateProjectionMatrix()
+    cam.position.copy(origin).addScaledVector(dir, -d / 2)
+    cam.up.set(...p.axisT).normalize()
+    cam.lookAt(origin)
+    cam.updateMatrixWorld()
+    const r = this.renderer
+    r.setRenderTarget(target)
+    r.clear(false, true, false)
+    r.render(scene, cam)
+    return {
+      matrix: new THREE.Matrix4().multiplyMatrices(cam.projectionMatrix, cam.matrixWorldInverse),
+      scale: new THREE.Vector2(Math.max(w, h) / DEPTH_SIZE, d),
+    }
+  }
+
   /** Drops results for textures that are no longer painted. */
   keepOnly(keys: Iterable<string>): void {
     const keep = new Set(keys)
@@ -399,8 +495,30 @@ export class LiveryBaker {
 
     // 1b. vinyls, bottom to top, blended over the base colour
     const lu = this.layerMaterial.uniforms
-    for (const layer of settings.layers ?? []) {
-      if (!layer.projectors.length || layer.opacity <= 0) continue
+    const layers = (settings.layers ?? []).filter((l) => l.projectors.length && l.opacity > 0)
+    const occluders = new THREE.Scene()
+    if (layers.length) {
+      for (const m of settings.occluders ?? meshes) {
+        const o = new THREE.Mesh(m.geometry, this.depthMaterial)
+        o.matrixAutoUpdate = false
+        o.matrix.copy(m.world)
+        occluders.add(o)
+      }
+      occluders.updateMatrixWorld(true)
+    }
+    for (const layer of layers) {
+      // depth maps first: they switch the render target
+      const depth = layer.projectors
+        .slice(0, 2)
+        .map((p, i) => ({ ...this.renderDepth(occluders, p, this.depthTarget(i)), i }))
+      const second = depth[1] ?? depth[0]!
+      lu.depth0!.value = this.depthTarget(depth[0]!.i).depthTexture
+      lu.depth1!.value = this.depthTarget(second.i).depthTexture
+      lu.depthMatrix0!.value.copy(depth[0]!.matrix)
+      lu.depthMatrix1!.value.copy(second.matrix)
+      lu.depthScale0!.value.copy(depth[0]!.scale)
+      lu.depthScale1!.value.copy(second.scale)
+      r.setRenderTarget(this.ping)
       lu.vinyl!.value = layer.texture
       lu.opacity!.value = layer.opacity
       lu.useFlat!.value = !!layer.flatColor
@@ -459,6 +577,11 @@ export class LiveryBaker {
   }
 
   dispose(): void {
+    for (const t of this.depthTargets) {
+      t.depthTexture?.dispose()
+      t.dispose()
+    }
+    this.depthMaterial.dispose()
     this.ping?.dispose()
     this.pong?.dispose()
     this.keepOnly([])

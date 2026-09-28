@@ -442,6 +442,8 @@ export class EngineController {
     const textures = params.textures.filter((t) => this.viewer.modelTexture(t))
     const layers = await this.prepareLayers(params.design)
     const baked = new Map<string, THREE.Texture>()
+    // every repainted surface hides what lies behind it from a projector
+    const occluders = textures.flatMap((t) => this.bakeMeshes(t))
     let aoUsed: AoSource = 'none'
     for (const [i, name] of textures.entries()) {
       const ao =
@@ -461,6 +463,7 @@ export class EngineController {
         aoStrength: params.aoStrength,
         alphaSource: alphaInfo?.texture ?? null,
         layers,
+        occluders,
       })
       baked.set(name.toLowerCase(), texture)
     }
@@ -485,6 +488,7 @@ export class EngineController {
         aoStrength: 0,
         alphaSource: sourceInfo?.texture ?? null,
         layers: mapLayers,
+        occluders,
       })
       baked.set(name.toLowerCase(), texture)
     }

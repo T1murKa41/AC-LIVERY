@@ -1361,6 +1361,11 @@ export const useStore = create<State & Actions>((set, get) => {
   }
 })
 
+/** Resolves once the livery on screen matches the current draft. */
+export function whenBaked(): Promise<void> {
+  return bakeRunning ?? Promise.resolve()
+}
+
 /** The engine of the mounted viewport (for overlays drawn over the canvas). */
 export function currentEngine(): EngineController | null {
   return engine

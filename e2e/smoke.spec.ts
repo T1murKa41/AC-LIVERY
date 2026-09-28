@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test'
+import { FIN } from '../src/shared/fixtures/syntheticCar'
 
 const PANEL_NAMES = { design: /Дизайн|Design/, base: /Основа|Base/, save: /Сохранение|Save/ }
 
@@ -396,4 +397,70 @@ test('groups scale and rotate together with the handles on the car', async ({ pa
   await page.getByRole('button', { name: /^(Разгруппировать|Ungroup)$/ }).click()
   await expect(page.locator('.group-row')).toHaveCount(0)
   await expect(page.locator('.layer-row')).toHaveCount(2)
+})
+
+test('a vinyl only paints the first surface it meets (thin fins)', async ({ page }) => {
+  await openCar(page, 'fin')
+  await page.locator('.tabs button').nth(1).click()
+  await page.locator('.swatch').nth(5).click() // blue base
+  await page.locator('.add-grid .tool').first().click() // white rectangle
+
+  const shares = await page.evaluate(
+    async ({ fin }) => {
+      interface Hook {
+        store: {
+          getState(): {
+            selectedLayer: string
+            updatePlacement(id: string, patch: object): void
+          }
+        }
+        engine(): {
+          exportPayload(): {
+            textures: { name: string; width: number; height: number; rgba: Uint8Array }[]
+          }
+        }
+        whenBaked(): Promise<void>
+      }
+      const hook = (globalThis as unknown as { __aclTest: Hook }).__aclTest
+      const st = hook.store.getState()
+      const measure = async (mirror: string) => {
+        // on the left face of the fin, projected from the left; the right face
+        // is 2 cm behind it, well within the projector's depth
+        st.updatePlacement(st.selectedLayer, {
+          position: [fin.x / 0.95, (1.075 - 0.775) / 0.525, -1.7 / 2.25],
+          direction: [-1, 0, 0],
+          width: 0.15,
+          height: 0.05,
+          depth: 0.5,
+          mirror,
+        })
+        await hook.whenBaked()
+        const tex = hook
+          .engine()
+          .exportPayload()
+          .textures.find((t) => t.name === 'Skin_00.dds')!
+        const share = ([u0, v0, u1, v1]: readonly number[]) => {
+          let white = 0
+          let total = 0
+          for (let y = Math.ceil(v0! * tex.height); y < Math.floor(v1! * tex.height); y++) {
+            for (let x = Math.ceil(u0! * tex.width); x < Math.floor(u1! * tex.width); x++) {
+              const o = (y * tex.width + x) * 4
+              if (tex.rgba[o]! > 170 && tex.rgba[o + 1]! > 170 && tex.rgba[o + 2]! > 170) white++
+              total++
+            }
+          }
+          return white / total
+        }
+        return { left: share(fin.uvLeft), right: share(fin.uvRight) }
+      }
+      return { single: await measure('none'), mirrored: await measure('readable') }
+    },
+    { fin: FIN },
+  )
+  // one side only: nothing shows through on the far face
+  expect(shares.single.left).toBeGreaterThan(0.3)
+  expect(shares.single.right).toBeLessThan(0.01)
+  // with a copy on the other side each face gets exactly one vinyl
+  expect(shares.mirrored.right).toBeGreaterThan(0.3)
+  expect(Math.abs(shares.mirrored.left - shares.single.left)).toBeLessThan(0.02)
 })

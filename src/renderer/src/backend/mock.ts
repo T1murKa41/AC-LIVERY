@@ -10,7 +10,7 @@ import {
   type CarSummary,
   type SkinInfo,
 } from '@shared/api'
-import { buildSyntheticCar } from '@shared/fixtures/syntheticCar'
+import { buildSyntheticCar, type SyntheticCarOptions } from '@shared/fixtures/syntheticCar'
 import { hasTransparency, writeDds } from '@shared/formats/dds'
 import { asRecord, asString, parseLenientJson } from '@shared/formats/json'
 import { parseUiSkin, serializeUiSkin } from '@shared/formats/uiSkin'
@@ -22,8 +22,8 @@ const dec = new TextDecoder()
 
 export function createMockBackend(): Backend {
   const files = new Map<string, Uint8Array>()
-  const addCar = (id: string, name: string, shared: boolean, overlay = false) => {
-    const car = buildSyntheticCar({ sharedSideUv: shared, overlayLivery: overlay })
+  const addCar = (id: string, name: string, options: SyntheticCarOptions = {}) => {
+    const car = buildSyntheticCar(options)
     for (const [rel, data] of Object.entries(car.files)) {
       const renamed = rel.replace(car.id, id)
       files.set(
@@ -34,9 +34,12 @@ export function createMockBackend(): Backend {
       )
     }
   }
-  addCar('aclivery_test_coupe', 'AC Livery Test Coupe', false)
-  addCar('aclivery_test_shared_uv', 'AC Livery Test Coupe (shared UV)', true)
-  addCar('aclivery_test_overlay', 'AC Livery Test Coupe (livery overlay)', false, true)
+  addCar('aclivery_test_coupe', 'AC Livery Test Coupe')
+  addCar('aclivery_test_shared_uv', 'AC Livery Test Coupe (shared UV)', { sharedSideUv: true })
+  addCar('aclivery_test_overlay', 'AC Livery Test Coupe (livery overlay)', {
+    overlayLivery: true,
+  })
+  addCar('aclivery_test_fin', 'AC Livery Test Coupe (fin)', { fin: true })
 
   if (import.meta.env.DEV) {
     // lets end-to-end scripts inspect exported files
