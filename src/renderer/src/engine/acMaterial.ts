@@ -79,11 +79,23 @@ uniform bool blended;
 uniform vec3 sunColor;
 uniform vec3 ambientColor;
 uniform float highlight;
+// Custom Shaders Patch car paint preview: 0 none, 1 metallic, 2 pearl,
+// 3 chameleon, 4 chrome, 5 matte. A rough look-alike, not CSP's shader.
+uniform float cspMode;
+uniform bool cspAlphaMask;
+uniform vec3 cspA;
+uniform vec3 cspB;
+uniform float cspFlakes;
+uniform float cspPearl;
 varying vec3 vWorldPos;
 varying vec3 vNormal;
 varying vec3 vTangent;
 varying vec2 vUv;
 ${SKY_GLSL}
+float sparkle(vec3 p) {
+  return fract(sin(dot(floor(p), vec3(12.9898, 78.233, 37.719))) * 43758.5453);
+}
+
 void main() {
   vec4 diff = hasDiffuse ? texture2D(txDiffuse, vUv) : vec4(1.0);
   if (alphaTested && diff.a < ksAlphaRef) discard;
@@ -111,18 +123,40 @@ void main() {
   float NdH = max(dot(N, H), 0.0);
   vec3 maps = (multimap && hasMaps) ? texture2D(txMaps, vUv).rgb : vec3(1.0);
 
+  // CSP paint: weight of the effect here, and the view angle
+  float csp = cspMode > 0.5 ? (cspAlphaMask ? 1.0 - diff.a : 1.0) : 0.0;
+  float edge = 1.0 - clamp(dot(N, V), 0.0, 1.0);
+  vec3 env = skyColor(reflect(-V, N));
+  vec3 paint = diff.rgb;
+  float isMode[6];
+  for (int i = 0; i < 6; i++) isMode[i] = csp * step(abs(cspMode - float(i)), 0.5);
+  float glossK = 1.0 - 0.9 * isMode[5];
+  // chameleon: colour shifts from A (facing) to B (glancing)
+  float t = smoothstep(0.25, 0.9, pow(edge, 1.2));
+  diff.rgb = mix(diff.rgb, cspA, 0.6 * (1.0 - t) * isMode[3]);
+  diff.rgb = mix(diff.rgb, cspB, t * isMode[3]);
+  // chrome: dark base under a strong, tinted mirror
+  diff.rgb *= 1.0 - 0.85 * isMode[4];
+
   vec3 color = diff.rgb * (ksAmbient * ambientColor + ksDiffuse * NdL * sunColor);
   float specExp = max(1.0, ksSpecularEXP * maps.g);
-  color += sunColor * (ksSpecular * maps.r * pow(NdH, specExp) * step(0.0, NdL));
+  color += glossK * sunColor * (ksSpecular * maps.r * pow(NdH, specExp) * step(0.0, NdL));
   if (sunSpecular > 0.0) {
-    color += sunColor * (sunSpecular * maps.r * pow(NdH, max(1.0, sunSpecularEXP * maps.g)));
+    color += glossK * sunColor * (sunSpecular * maps.r * pow(NdH, max(1.0, sunSpecularEXP * maps.g)));
   }
   if (reflective) {
-    float f = fresnelC + (1.0 - fresnelC) * pow(1.0 - clamp(dot(N, V), 0.0, 1.0), fresnelEXP);
-    f = min(f, fresnelMaxLevel) * maps.b;
-    vec3 env = skyColor(reflect(-V, N));
+    float f = fresnelC + (1.0 - fresnelC) * pow(edge, fresnelEXP);
+    f = min(f, fresnelMaxLevel) * maps.b * glossK;
     color = isAdditive > 0.5 ? color + env * f : mix(color, env, f);
   }
+  // metallic: broad coloured sheen and flakes catching the sun
+  color += isMode[1] * paint * sunColor * pow(NdH, 10.0) * 0.45 * step(0.0, NdL);
+  color += isMode[1] * sunColor * cspFlakes * step(0.97, sparkle(vWorldPos * 350.0)) * pow(NdH, 3.0) * 0.8;
+  // pearl: specular and edges drift to a neighbouring hue
+  vec3 shifted = mix(paint, paint.gbr, 0.6);
+  color += isMode[2] * cspPearl * shifted * sunColor * pow(NdH, 14.0) * 0.6;
+  color = mix(color, shifted * (0.4 + dot(color, vec3(0.333))), isMode[2] * cspPearl * pow(edge, 2.0) * 0.4);
+  color = mix(color, env * mix(vec3(1.0), paint, 0.7), 0.8 * isMode[4]);
   color += ksEmissive * diff.rgb;
   color = mix(color, vec3(1.0, 0.55, 0.1), highlight * 0.45);
   gl_FragColor = vec4(color, blended ? diff.a : 1.0);
@@ -216,6 +250,12 @@ export function createAcMaterial(
       sunColor: { value: LIGHTING.sunColor },
       ambientColor: { value: LIGHTING.ambientColor },
       highlight: { value: 0 },
+      cspMode: { value: 0 },
+      cspAlphaMask: { value: false },
+      cspA: { value: new THREE.Vector3() },
+      cspB: { value: new THREE.Vector3() },
+      cspFlakes: { value: 0 },
+      cspPearl: { value: 0 },
     },
     transparent: blended,
     depthWrite: !blended && material.depthMode === DEPTH_NORMAL,

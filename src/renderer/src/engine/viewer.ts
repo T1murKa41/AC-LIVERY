@@ -20,6 +20,16 @@ export interface RayHit {
   meshIndex: number
 }
 
+/** Uniform values of the CSP car paint preview (see acMaterial). */
+export interface CspPreview {
+  mode: number
+  colorA: [number, number, number]
+  colorB: [number, number, number]
+  flakes: number
+  pearl: number
+  alphaMask: boolean
+}
+
 /** Lets the app take over mouse input on the car (e.g. to drag a vinyl). */
 export interface InteractionHandler {
   /** Return true to capture the drag (camera controls pause until release). */
@@ -419,6 +429,26 @@ export class Viewer {
     const d = new THREE.Vector3()
     this.camera.getWorldDirection(d)
     return [d.x, d.y, d.z]
+  }
+
+  /**
+   * Previews a Custom Shaders Patch car paint on the named materials; null
+   * turns it off everywhere.
+   */
+  setCspPaint(materials: ReadonlySet<string> | null, paint: CspPreview | null): void {
+    for (const m of this.materials) {
+      const u = m.uniforms
+      const on = !!materials && !!paint && materials.has(m.name)
+      u.cspMode!.value = on ? paint.mode : 0
+      if (on) {
+        u.cspA!.value.set(...paint.colorA)
+        u.cspB!.value.set(...paint.colorB)
+        u.cspFlakes!.value = paint.flakes
+        u.cspPearl!.value = paint.pearl
+        u.cspAlphaMask!.value = paint.alphaMask
+      }
+    }
+    this.requestRender()
   }
 
   /** Ray through the centre of the viewport. */

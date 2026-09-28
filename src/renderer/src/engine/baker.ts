@@ -203,6 +203,68 @@ void main() {
 `
 
 const DILATE_PASSES = 8
+
+export const RECOLOR_MODES = ['tint', 'glass', 'maps'] as const
+
+export interface RecolorSettings {
+  width: number
+  height: number
+  /**
+   * tint: `color` with the source's shading (its luminance relative to
+   * `reference`); glass: tint plus less transparency (`darkness`); maps:
+   * `color` holds finish values written where `mask` (the part's diffuse
+   * texture) is repainted.
+   */
+  mode: (typeof RECOLOR_MODES)[number]
+  color: [number, number, number]
+  /** Source luminance that becomes exactly `color`. */
+  reference: number
+  /** Normalised RGB of the part's own paint; pixels of other hues are logos. */
+  paintDirection?: [number, number, number]
+  keepLogos: boolean
+  darkness?: number
+  mask?: THREE.Texture | null
+}
+
+// The paint of a part is its dominant hue in any shade; pixels of another hue
+// (a red logo on a silver rim, white lettering on a yellow caliper) can be
+// kept. Texture fetches stay outside the branches on purpose.
+const RECOLOR_FRAGMENT = /* glsl */ `
+uniform sampler2D src;
+uniform sampler2D maskSrc;
+uniform bool hasMask;
+uniform int mode;
+uniform vec3 color;
+uniform float reference;
+uniform vec3 paintDirection;
+uniform bool keepLogos;
+uniform float darkness;
+varying vec2 vUv;
+
+float paintable(vec3 c) {
+  float lum = dot(c, vec3(0.299, 0.587, 0.114));
+  float same = smoothstep(0.93, 0.975, dot(normalize(c + 1e-4), paintDirection));
+  // near-black pixels have no reliable hue: shadows of the paint
+  same = mix(1.0, same, smoothstep(0.03, 0.08, lum));
+  return keepLogos ? same : 1.0;
+}
+
+void main() {
+  vec4 s = texture2D(src, vUv);
+  vec4 m = texture2D(maskSrc, vUv);
+  float k = dot(s.rgb, vec3(0.299, 0.587, 0.114)) / max(reference, 0.02);
+  if (mode == 0) {
+    vec3 tinted = clamp(color * k, 0.0, 1.0);
+    gl_FragColor = vec4(mix(s.rgb, tinted, paintable(s.rgb)), s.a);
+  } else if (mode == 1) {
+    vec3 tinted = clamp(color * clamp(k, 0.6, 1.4), 0.0, 1.0);
+    gl_FragColor = vec4(tinted, s.a + (1.0 - s.a) * darkness);
+  } else {
+    float w = hasMask ? paintable(m.rgb) : 1.0;
+    gl_FragColor = vec4(mix(s.rgb, color, w), s.a);
+  }
+}
+`
 /** Resolution of the per-projector depth maps used to find the first surface. */
 const DEPTH_SIZE = 1024
 
@@ -291,6 +353,23 @@ export class LiveryBaker {
   private readonly layerMaterial: THREE.ShaderMaterial
   private readonly dilateMaterial: THREE.ShaderMaterial
   private readonly finalMaterial: THREE.ShaderMaterial
+  private readonly recolorMaterial = new THREE.ShaderMaterial({
+    vertexShader: QUAD_VERTEX,
+    fragmentShader: RECOLOR_FRAGMENT,
+    uniforms: {
+      src: { value: null },
+      maskSrc: { value: null },
+      hasMask: { value: false },
+      mode: { value: 0 },
+      color: { value: new THREE.Vector3() },
+      reference: { value: 0.5 },
+      paintDirection: { value: new THREE.Vector3(1, 1, 1).normalize() },
+      keepLogos: { value: true },
+      darkness: { value: 0 },
+    },
+    depthTest: false,
+    depthWrite: false,
+  })
   private depthTargets: THREE.WebGLRenderTarget[] = []
   private readonly depthCamera = new THREE.OrthographicCamera()
   private readonly depthMaterial = new THREE.ShaderMaterial({
@@ -389,6 +468,11 @@ export class LiveryBaker {
       this.ping = nearestTarget(width, height)
       this.pong = nearestTarget(width, height)
     }
+    return this.outputTarget(key, width, height)
+  }
+
+  /** The mipmapped result texture for `key`, reused while its size stays the same. */
+  private outputTarget(key: string, width: number, height: number): THREE.WebGLRenderTarget {
     const existing = this.outputs.get(key)
     if (existing && existing.width === width && existing.height === height) return existing
     existing?.dispose()
@@ -567,6 +651,33 @@ export class LiveryBaker {
     return output.texture
   }
 
+  /**
+   * Recolours a whole texture in its own UV space (no projection): rims,
+   * calipers, glass, or the material map of a part. The result is kept under
+   * `key` like a baked livery texture.
+   */
+  recolor(key: string, source: THREE.Texture, settings: RecolorSettings): THREE.Texture {
+    const output = this.outputTarget(key, settings.width, settings.height)
+    const u = this.recolorMaterial.uniforms
+    u.src!.value = source
+    u.maskSrc!.value = settings.mask ?? WHITE
+    u.hasMask!.value = !!settings.mask
+    u.mode!.value = RECOLOR_MODES.indexOf(settings.mode)
+    u.color!.value.set(...settings.color)
+    u.reference!.value = settings.reference
+    if (settings.paintDirection) u.paintDirection!.value.set(...settings.paintDirection)
+    else u.paintDirection!.value.set(1, 1, 1).normalize()
+    u.keepLogos!.value = settings.keepLogos
+    u.darkness!.value = settings.darkness ?? 0
+    const r = this.renderer
+    const prevTarget = r.getRenderTarget()
+    this.quad.material = this.recolorMaterial
+    r.setRenderTarget(output)
+    r.render(this.quadScene, this.camera)
+    r.setRenderTarget(prevTarget)
+    return output.texture
+  }
+
   /** Reads a baked texture as RGBA8, row 0 = first row of the texture file. */
   readPixels(key: string): { width: number; height: number; rgba: Uint8Array } {
     const out = this.outputs.get(key)
@@ -582,6 +693,7 @@ export class LiveryBaker {
       t.dispose()
     }
     this.depthMaterial.dispose()
+    this.recolorMaterial.dispose()
     this.ping?.dispose()
     this.pong?.dispose()
     this.keepOnly([])

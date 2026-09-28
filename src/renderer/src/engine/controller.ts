@@ -14,14 +14,27 @@ import {
 import type { CarAnalysis } from '@shared/car/analysis'
 import { canDecodeOnCpu, decodeDdsMip, isDds, parseDds } from '@shared/formats/dds'
 import { aoSourceScore } from '@shared/image/ao'
-import { LiveryBaker, readTexture, uvCoverage, type BakeLayer, type BakeMesh } from './baker'
-import { hitsProjector, placeAt, projectors, type Frame } from '@shared/design/placement'
+import { measurePaint, type PaintReference } from '@shared/image/paint'
 import {
+  LiveryBaker,
+  readTexture,
+  uvCoverage,
+  type BakeLayer,
+  type BakeMesh,
+  type RecolorSettings,
+} from './baker'
+import { hitsProjector, placeAt, projectors, type Frame } from '@shared/design/placement'
+import { detectParts, type CarParts } from '@shared/car/parts'
+import { buildCspConfig, SKIN_CONFIG_FILE } from '@shared/design/csp'
+import {
+  CSP_EFFECTS,
   FINISH_MAPS,
   type BaseFinish,
   type Design,
   type Layer,
+  type CspPaint,
   type LayerFinish,
+  type PartsPaint,
   type Placement,
 } from '@shared/design/types'
 import { rasterize, rasterKey } from './vinyl'
@@ -45,6 +58,10 @@ export interface LiveryParams {
   design: Design
   /** Other textures to blank out (e.g. stock sponsor decals). */
   cleared: string[]
+  /** Rims, calipers and glass. */
+  parts: PartsPaint
+  /** Custom Shaders Patch car paint (previewed, written on export). */
+  csp: CspPaint
 }
 
 export interface LiveryCandidate {
@@ -105,6 +122,11 @@ export class EngineController {
   private painted: string[] = []
   /** Material maps (txMaps) rewritten for finishes. */
   private bakedMaps: string[] = []
+  /** Recoloured rims, calipers, glass and their maps. */
+  private bakedParts: string[] = []
+  private partsInfo: CarParts | null = null
+  private readonly referenceCache = new Map<string, PaintReference>()
+  private readonly alphaMaskCache = new Map<string, boolean>()
   private cleared: string[] = []
   private readonly vinyls = new Map<string, { key: string; texture: THREE.CanvasTexture }>()
   private baseSkin: string | null = null
@@ -166,6 +188,10 @@ export class EngineController {
     this.candidates = null
     this.painted = []
     this.bakedMaps = []
+    this.bakedParts = []
+    this.partsInfo = null
+    this.referenceCache.clear()
+    this.alphaMaskCache.clear()
     this.baseSkin = null
     this.lastSkinStatus = []
     this.liveryActive = false
@@ -199,6 +225,7 @@ export class EngineController {
   async showSkin(skinId: string | null): Promise<SkinTextureStatus[]> {
     this.liveryActive = false
     this.viewer.clearOverrides()
+    this.viewer.setCspPaint(null, null)
     if (!skinId || !this.analysis) return []
     const skin = this.car?.skins.find((s) => s.id === skinId)
     const status = await Promise.all(
@@ -492,6 +519,7 @@ export class EngineController {
       })
       baked.set(name.toLowerCase(), texture)
     }
+    const parts = await this.recolorParts(params, baked)
     this.baker.keepOnly(baked.keys())
 
     // load the base skin before touching the view to avoid flicker
@@ -509,15 +537,209 @@ export class EngineController {
     this.viewer.clearOverrides()
     for (const [name, texture] of base) this.viewer.setOverride(name, texture)
     for (const name of cleared) this.viewer.setOverride(name, TRANSPARENT)
-    for (const name of [...textures, ...maps])
+    for (const name of [...textures, ...maps, ...parts])
       this.viewer.setOverride(name, baked.get(name.toLowerCase())!)
     this.painted = textures
     this.bakedMaps = maps
+    this.bakedParts = parts
+    await this.previewCsp(params.csp, textures, params.baseSkin)
     this.setPaintFilter(textures)
     this.cleared = cleared
     this.baseSkin = params.baseSkin
     this.liveryActive = textures.length > 0
     return { aoUsed }
+  }
+
+  // -------------------------------------------------------------------------
+  // Custom Shaders Patch car paint
+
+  /** Car paint materials of the repainted textures: what CSP's car paint replaces. */
+  cspMaterials(painted: readonly string[]): string[] {
+    const car = this.viewer.loadedCar
+    if (!car) return []
+    const diffuse = new Set(painted.map((t) => t.toLowerCase()))
+    const names = car.materials
+      .filter((m) => m.shader.toLowerCase().includes('multimap'))
+      .filter((m) => {
+        const d = m.textures.find((t) => t.name === 'txDiffuse')?.texture
+        return !!d && diffuse.has(d.toLowerCase())
+      })
+      .map((m) => m.name)
+    return [...new Set(names)]
+  }
+
+  /** The paint is where the texture's alpha is black (typical for Kunos skins). */
+  private async paintAlphaMask(texture: string, baseSkin: string | null): Promise<boolean> {
+    const key = `${baseSkin ?? ''}|${texture.toLowerCase()}`
+    const cached = this.alphaMaskCache.get(key)
+    if (cached !== undefined) return cached
+    const info =
+      (baseSkin ? await this.skinTexture(baseSkin, texture).catch(() => null) : null) ??
+      this.viewer.modelTexture(texture)
+    let mask = false
+    if (info?.hasAlpha) {
+      const rgba = readTexture(this.viewer.renderer, info.texture, 32, 32)
+      let sum = 0
+      for (let i = 3; i < rgba.length; i += 4) sum += rgba[i]!
+      mask = sum / (rgba.length / 4) < 128
+    }
+    this.alphaMaskCache.set(key, mask)
+    return mask
+  }
+
+  private async previewCsp(
+    paint: CspPaint,
+    painted: readonly string[],
+    baseSkin: string | null,
+  ): Promise<void> {
+    const materials = this.cspMaterials(painted)
+    if (paint.effect === 'none' || !materials.length || !painted[0]) {
+      this.viewer.setCspPaint(null, null)
+      return
+    }
+    this.viewer.setCspPaint(new Set(materials), {
+      mode: CSP_EFFECTS.indexOf(paint.effect),
+      colorA: hexToRgb(paint.colorA),
+      colorB: hexToRgb(paint.colorB),
+      flakes: paint.flakes,
+      pearl: paint.pearl,
+      alphaMask: await this.paintAlphaMask(painted[0], baseSkin),
+    })
+  }
+
+  /**
+   * The skin's ext_config.ini with the CSP car paint, kept on top of the base
+   * skin's own config; null when there is nothing to write.
+   */
+  async cspConfig(
+    paint: CspPaint,
+    painted: readonly string[],
+    baseSkin: string | null,
+  ): Promise<string | null> {
+    const materials = this.cspMaterials(painted)
+    if (paint.effect === 'none' || !materials.length || !painted[0] || !this.car) return null
+    const skin = baseSkin ? this.car.skins.find((s) => s.id === baseSkin) : undefined
+    const file = skin && findFile(skin.files, SKIN_CONFIG_FILE)
+    const base = file
+      ? new TextDecoder().decode(
+          await this.backend.readFile(`${skinDir(this.car.id, skin.id)}/${file}`),
+        )
+      : null
+    return buildCspConfig({
+      paint,
+      materials,
+      alphaMask: await this.paintAlphaMask(painted[0], baseSkin),
+      base,
+    })
+  }
+
+  // -------------------------------------------------------------------------
+  // Rims, calipers, glass
+
+  /** Textures of the parts that can be recoloured on this car. */
+  carParts(): CarParts {
+    if (this.partsInfo) return this.partsInfo
+    const car = this.viewer.loadedCar
+    if (!car || !this.analysis) return { rims: [], rimMaps: [], calipers: [], glass: [] }
+    const hidden = new Set(car.meshes.filter((m) => m.hidden).map((m) => m.index))
+    this.partsInfo = detectParts(this.analysis, car.materials, hidden)
+    return this.partsInfo
+  }
+
+  /**
+   * The paint of a part texture: its dominant hue and the median luminance
+   * of the pixels of that hue. The recolour maps that luminance to exactly
+   * the chosen colour.
+   */
+  private paintReference(info: TextureInfo, key: string): PaintReference {
+    const cached = this.referenceCache.get(key)
+    if (cached) return cached
+    const reference = measurePaint(readTexture(this.viewer.renderer, info.texture, 64, 64))
+    this.referenceCache.set(key, reference)
+    return reference
+  }
+
+  /** Recolours the enabled parts into `baked`; returns the texture names written. */
+  private async recolorParts(
+    params: LiveryParams,
+    baked: Map<string, THREE.Texture>,
+  ): Promise<string[]> {
+    const parts = this.carParts()
+    const written: string[] = []
+    const source = async (name: string) =>
+      (params.baseSkin ? await this.skinTexture(params.baseSkin, name).catch(() => null) : null) ??
+      this.viewer.modelTexture(name)
+    const recolor = async (
+      name: string,
+      settings: Omit<RecolorSettings, 'width' | 'height' | 'reference'>,
+      withReference = true,
+    ) => {
+      const key = name.toLowerCase()
+      if (baked.has(key)) return // repainted as a livery texture already
+      const info = await source(name)
+      if (!info) return
+      const paint = withReference ? this.paintReference(info, key) : null
+      baked.set(
+        key,
+        this.baker.recolor(key, info.texture, {
+          paintDirection: paint?.direction,
+          ...settings,
+          width: info.width,
+          height: info.height,
+          reference: paint?.luminance ?? 1,
+        }),
+      )
+      written.push(name)
+    }
+    const { rims, calipers, glass } = params.parts
+    if (rims.enabled) {
+      for (const name of parts.rims) {
+        await recolor(name, {
+          mode: 'tint',
+          color: hexToRgb(rims.color),
+          keepLogos: rims.keepLogos,
+        })
+      }
+      if (rims.finish !== 'stock') {
+        for (const m of parts.rimMaps) {
+          const mask = await source(m.diffuse)
+          await recolor(
+            m.name,
+            {
+              mode: 'maps',
+              color: FINISH_MAPS[rims.finish],
+              keepLogos: rims.keepLogos,
+              mask: mask?.texture ?? null,
+              paintDirection: mask
+                ? this.paintReference(mask, m.diffuse.toLowerCase()).direction
+                : undefined,
+            },
+            false,
+          )
+        }
+      }
+    }
+    if (calipers.enabled) {
+      for (const name of parts.calipers) {
+        await recolor(name, {
+          mode: 'tint',
+          color: hexToRgb(calipers.color),
+          keepLogos: calipers.keepLogos,
+        })
+      }
+    }
+    if (glass.enabled) {
+      for (const g of parts.glass) {
+        if (!g.exterior && !glass.interior) continue
+        await recolor(g.name, {
+          mode: 'glass',
+          color: hexToRgb(glass.color),
+          keepLogos: false,
+          darkness: glass.darkness,
+        })
+      }
+    }
+    return written
   }
 
   // -------------------------------------------------------------------------
@@ -678,12 +900,13 @@ export class EngineController {
   }
 
   /** Baked textures plus the untouched textures of the base skin to copy along. */
-  exportPayload(): {
+  exportPayload(extraFiles: readonly string[] = []): {
     textures: ExportTexture[]
     copyFiles?: { fromSkin: string; files: string[] }
   } {
     if (!this.liveryActive || !this.analysis) return { textures: [] }
-    const textures: ExportTexture[] = [...this.painted, ...this.bakedMaps].map((name) => ({
+    const written = [...this.painted, ...this.bakedMaps, ...this.bakedParts]
+    const textures: ExportTexture[] = written.map((name) => ({
       name,
       ...this.baker.readPixels(name.toLowerCase()),
     }))
@@ -695,7 +918,11 @@ export class EngineController {
     if (!skin) return { textures }
     // Everything else of the base skin (untouched textures, skin.ini, crew
     // suits, CSP configs) comes along, except its metadata and previews.
-    const skip = new Set([...textures.map((t) => t.name.toLowerCase()), ...BASE_SKIN_OWN_FILES])
+    const skip = new Set([
+      ...textures.map((t) => t.name.toLowerCase()),
+      ...extraFiles.map((f) => f.toLowerCase()),
+      ...BASE_SKIN_OWN_FILES,
+    ])
     const files = skin.files.filter((f) => !skip.has(f.toLowerCase()))
     return { textures, copyFiles: files.length ? { fromSkin: skin.id, files } : undefined }
   }

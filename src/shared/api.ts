@@ -63,6 +63,11 @@ export interface ExportRequest {
    * that are not repainted. Written before `textures`, which win on conflict.
    */
   copyFiles?: { fromSkin: string; files: string[] }
+  /**
+   * Small files written as they are (e.g. the skin's ext_config.ini for
+   * Custom Shaders Patch), after the copied files.
+   */
+  extraFiles?: { name: string; data: Uint8Array }[]
   /** Stored in the marker file to allow reopening the design later. */
   project?: unknown
 }

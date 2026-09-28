@@ -4,6 +4,35 @@ type Shape<T> = { [K in keyof T]: T[K] extends string ? string : Shape<T[K]> }
 
 export const en: Shape<typeof ru> = {
   app: { title: 'AC Livery' },
+  parts: {
+    csp: 'CSP car paint',
+    cspEffect: 'Effect',
+    cspHint:
+      "Written to the skin's ext_config.ini and works with Custom Shaders Patch; without CSP the skin looks as usual. Materials: {{materials}}. The preview is approximate.",
+    cspUnavailable:
+      'The repainted texture has no car paint material (ksPerPixelMultiMap), so CSP effects are not available.',
+    flakes: 'Flakes',
+    pearl: 'Pearl',
+    colorA: 'Facing colour',
+    colorB: 'Glancing colour',
+    rims: 'Rims',
+    calipers: 'Calipers',
+    glass: 'Glass',
+    recolor: 'Recolour',
+    tint: 'Tint',
+    keepLogos: 'Keep coloured logos',
+    darkness: 'Darkness',
+    interiorGlass: 'Also glass seen only from the cockpit',
+    notFound: 'Not found on this car.',
+    effects: {
+      none: 'None',
+      metallic: 'Metallic',
+      pearl: 'Pearl',
+      chameleon: 'Chameleon',
+      chrome: 'Chrome',
+      matte: 'Matte (CSP)',
+    },
+  },
   project: {
     open: 'Open project…',
     openHint: 'Open an .aclivery project file (Ctrl+O)',
@@ -67,6 +96,7 @@ export const en: Shape<typeof ru> = {
     panels: {
       design: 'Design',
       base: 'Base',
+      parts: 'Parts',
       save: 'Save',
     },
     target: 'What to repaint',

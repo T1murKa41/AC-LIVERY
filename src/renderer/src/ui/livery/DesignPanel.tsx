@@ -14,6 +14,7 @@ import {
 import { useStore, type AlignMode, type SelectMode } from '../../state/store'
 import { ColorField } from './ColorField'
 import { ShapeIcon } from './ShapeIcon'
+import { Slider } from './Slider'
 
 const IMAGE_TYPES = '.png,.jpg,.jpeg,.webp,.svg,image/png,image/jpeg,image/webp,image/svg+xml'
 const FONT_TYPES = '.ttf,.otf,.woff,.woff2'
@@ -383,34 +384,6 @@ function SelectionPanel() {
         </button>
       </div>
     </section>
-  )
-}
-
-function Slider(props: {
-  label: string
-  value: number
-  min: number
-  max: number
-  step: number
-  format: (v: number) => string
-  onChange: (v: number) => void
-  disabled?: boolean
-}) {
-  return (
-    <label className="field">
-      <span>
-        {props.label} <span className="mono muted">{props.format(props.value)}</span>
-      </span>
-      <input
-        type="range"
-        min={props.min}
-        max={props.max}
-        step={props.step}
-        value={props.value}
-        disabled={props.disabled}
-        onChange={(e) => props.onChange(Number(e.target.value))}
-      />
-    </label>
   )
 }
 

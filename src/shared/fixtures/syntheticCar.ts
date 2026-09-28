@@ -222,6 +222,51 @@ function buildWheel(outwardX: number): MeshBuilder {
   return m
 }
 
+/** Brake caliper: a small box behind the rim, inside the wheel. */
+function buildCaliper(outwardX: number): MeshBuilder {
+  const m = newBuilder()
+  const x0 = -outwardX * 0.12
+  const x1 = -outwardX * 0.04
+  const y0 = 0.05
+  const y1 = 0.22
+  const z0 = -0.12
+  const z1 = 0.12
+  // outer face (towards the rim) and top, enough to be seen through the spokes
+  quad(
+    m,
+    [
+      [x1, y1, z0],
+      [x1, y1, z1],
+      [x1, y0, z1],
+      [x1, y0, z0],
+    ],
+    [
+      [0, 0],
+      [1, 0],
+      [1, 1],
+      [0, 1],
+    ],
+    [outwardX, 0, 0],
+  )
+  quad(
+    m,
+    [
+      [x0, y1, z0],
+      [x0, y1, z1],
+      [x1, y1, z1],
+      [x1, y1, z0],
+    ],
+    [
+      [0, 0],
+      [1, 0],
+      [1, 0.5],
+      [0, 0.5],
+    ],
+    [0, 1, 0],
+  )
+  return m
+}
+
 function meshNode(name: string, materialId: number, b: MeshBuilder): Kn5MeshNode {
   const vertexCount = b.positions.length / 3
   let cx = 0
@@ -401,6 +446,23 @@ function paintDecal(rgb: [number, number, number]): RgbaImage {
 }
 
 export const DECAL_TEXTURE = 'decals.dds'
+export const RIM_TEXTURE = 'rim.dds'
+export const CALIPER_TEXTURE = 'caliper.dds'
+
+/** Silver rim with a darker centre and a small red logo. */
+function paintRim(): RgbaImage {
+  const img = image(64, [165, 165, 170])
+  fillRect(img, 0.4, 0.4, 0.6, 0.6, [70, 70, 75])
+  fillRect(img, 0.45, 0.1, 0.55, 0.2, [220, 20, 30])
+  return img
+}
+
+/** Yellow caliper with a white logo. */
+function paintCaliper(): RgbaImage {
+  const img = image(32, [230, 190, 20])
+  fillRect(img, 0.3, 0.4, 0.7, 0.6, [250, 250, 250])
+  return img
+}
 
 /**
  * A thin vertical fin on the rear deck, 2 cm thick, like the engine cover
@@ -495,7 +557,7 @@ export function buildSyntheticCar(options: SyntheticCarOptions = {}): SyntheticC
         prop('fresnelMaxLevel', 0.6),
       ],
     ),
-    material('Material_Rim', 'ksPerPixel', { txDiffuse: 'rim.dds' }, [
+    material('Material_Rim', 'ksPerPixel', { txDiffuse: RIM_TEXTURE }, [
       prop('ksAmbient', 0.4),
       prop('ksDiffuse', 0.4),
       prop('ksSpecular', 0.6),
@@ -531,6 +593,12 @@ export function buildSyntheticCar(options: SyntheticCarOptions = {}): SyntheticC
         prop('ksSpecularEXP', 40),
       ],
     ),
+    material('EXT_Brake_Caliper', 'ksPerPixel', { txDiffuse: CALIPER_TEXTURE }, [
+      prop('ksAmbient', 0.4),
+      prop('ksDiffuse', 0.45),
+      prop('ksSpecular', 0.3),
+      prop('ksSpecularEXP', 40),
+    ]),
   ]
 
   const wheel = (name: string, x: number, z: number): Kn5Node => ({
@@ -538,7 +606,10 @@ export function buildSyntheticCar(options: SyntheticCarOptions = {}): SyntheticC
     name,
     active: true,
     transform: translation(x, 0.33, z),
-    children: [meshNode(`${name}_RIM`, 1, buildWheel(Math.sign(x)))],
+    children: [
+      meshNode(`${name}_RIM`, 1, buildWheel(Math.sign(x))),
+      meshNode(`${name}_CALIPER`, 5, buildCaliper(Math.sign(x))),
+    ],
   })
 
   const root: Kn5Node = {
@@ -578,7 +649,8 @@ export function buildSyntheticCar(options: SyntheticCarOptions = {}): SyntheticC
     textures: [
       { name: BODY_TEXTURE, active: 1, data: encode(white) },
       { name: MAPS_TEXTURE, active: 1, data: encode(maps) },
-      { name: 'rim.dds', active: 1, data: encode(image(64, [150, 150, 155])) },
+      { name: RIM_TEXTURE, active: 1, data: encode(paintRim()) },
+      { name: CALIPER_TEXTURE, active: 1, data: encode(paintCaliper()) },
       { name: 'glass.dds', active: 1, data: encode(image(16, [30, 35, 40])) },
       { name: DECAL_TEXTURE, active: 1, data: encodeAlpha(paintDecal([255, 120, 20])) },
       ...(options.overlayLivery

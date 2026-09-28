@@ -180,6 +180,26 @@ describe('exportSkin', () => {
     expect(await exportSkin(root, bad, encoders, '0')).toMatchObject({ ok: false, error: 'io' })
   })
 
+  it('writes extra files over copied ones, never the marker', async () => {
+    const config = new TextEncoder().encode('[INCLUDE: common/materials_carpaint.ini]\n')
+    const result = await exportSkin(
+      root,
+      request({
+        copyFiles: { fromSkin: '01_red_stripe', files: ['ui_skin.json'] },
+        extraFiles: [{ name: 'ext_config.ini', data: config }],
+      }),
+      encoders,
+      '0',
+    )
+    expect(result.ok).toBe(true)
+    const dir = join(root, 'content', 'cars', SYNTHETIC_CAR_ID, 'skins', 'my_livery')
+    expect(await readFile(join(dir, 'ext_config.ini'), 'utf8')).toContain('materials_carpaint')
+    for (const name of ['.aclivery.json', '../escape.ini']) {
+      const bad = request({ skinId: 'bad', extraFiles: [{ name, data: config }] })
+      expect(await exportSkin(root, bad, encoders, '0')).toMatchObject({ ok: false })
+    }
+  })
+
   it('writes png textures through the image encoder', async () => {
     const rgba = new Uint8Array(4 * 4 * 4)
     const result = await exportSkin(

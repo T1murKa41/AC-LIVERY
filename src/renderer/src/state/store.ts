@@ -10,6 +10,7 @@ import {
   type OverwriteMode,
 } from '@shared/api'
 import type { CarAnalysis } from '@shared/car/analysis'
+import type { CarParts } from '@shared/car/parts'
 import { asRecord, parseLenientJson } from '@shared/formats/json'
 import { createBackend } from '../backend'
 import {
@@ -24,6 +25,7 @@ import { logEntries } from '../engine/log'
 import { buildReport, describeMesh } from '../engine/report'
 import { fileToDataUrl, fontFamily, imageAspect, textAspect } from '../engine/vinyl'
 import { packProject, projectFileName, unpackProject } from '@shared/design/project'
+import { SKIN_CONFIG_FILE } from '@shared/design/csp'
 import {
   duplicateLayers,
   groupLayers,
@@ -42,6 +44,8 @@ import {
   type SelectionBounds,
 } from '@shared/design/transform'
 import {
+  DEFAULT_CSP,
+  DEFAULT_PARTS,
   DEFAULT_PLACEMENT,
   EMPTY_DESIGN,
   FONT_ASSET_PREFIX,
@@ -51,7 +55,9 @@ import {
   newTextLayer,
   type Asset,
   type BaseFinish,
+  type CspPaint,
   type Design,
+  type PartsPaint,
   type ImageLayer,
   type Layer,
   type Placement,
@@ -81,6 +87,10 @@ export interface LiveryDraft {
   baseColor: string
   /** Missing in drafts saved before finishes existed: 'stock'. */
   baseFinish?: BaseFinish
+  /** Rims, calipers and glass (missing in older drafts). */
+  parts?: PartsPaint
+  /** Custom Shaders Patch car paint (missing in older drafts). */
+  csp?: CspPaint
   aoSource: AoSource
   aoStrength: number
   skinId: string
@@ -111,6 +121,8 @@ export const DEFAULT_DRAFT: LiveryDraft = {
   clearedTextures: [],
   baseColor: '#d7261e',
   baseFinish: 'stock',
+  parts: DEFAULT_PARTS,
+  csp: DEFAULT_CSP,
   aoSource: 'auto',
   aoStrength: 0.85,
   skinId: 'my_livery',
@@ -123,16 +135,20 @@ export const DEFAULT_DRAFT: LiveryDraft = {
 interface Snapshot {
   baseColor: string
   baseFinish: BaseFinish
+  parts: PartsPaint
+  csp: CspPaint
   design: Design
 }
 
 const snapshot = (d: LiveryDraft): Snapshot => ({
   baseColor: d.baseColor,
   baseFinish: d.baseFinish ?? 'stock',
+  parts: d.parts ?? DEFAULT_PARTS,
+  csp: d.csp ?? DEFAULT_CSP,
   design: d.design,
 })
 
-export type LiveryPanel = 'design' | 'base' | 'save'
+export type LiveryPanel = 'design' | 'base' | 'parts' | 'save'
 
 interface State {
   backend: Backend
@@ -170,6 +186,10 @@ interface State {
   selectedOffPaint: boolean
   /** Material maps the finishes are written to (empty: finishes have no effect). */
   finishMaps: string[]
+  /** Rims, calipers and glass textures found on the loaded car. */
+  carParts: CarParts | null
+  /** Car paint materials a CSP effect applies to (empty: not available). */
+  cspMaterials: string[]
   /** Project file the draft was last opened from or saved to. */
   projectPath: string | null
   /** The draft changed since it was last saved, exported or opened. */
@@ -200,6 +220,8 @@ interface Actions {
   editSkin(skinId: string): Promise<void>
   updateDraft(patch: Partial<Omit<LiveryDraft, 'meta'>> & { meta?: Partial<LiveryMeta> }): void
   exportLivery(mode?: OverwriteMode): Promise<void>
+  updatePart<K extends keyof PartsPaint>(part: K, patch: Partial<PartsPaint[K]>): void
+  updateCsp(patch: Partial<CspPaint>): void
   dismissExport(): void
   setView(view: ViewMode): void
   setHighlight(on: boolean): void
@@ -303,6 +325,8 @@ export const useStore = create<State & Actions>((set, get) => {
       const { aoUsed } = await engine.bakeLivery({
         baseColor: draft.baseColor,
         baseFinish: draft.baseFinish ?? 'stock',
+        parts: draft.parts ?? DEFAULT_PARTS,
+        csp: draft.csp ?? DEFAULT_CSP,
         aoSource: draft.aoSource,
         aoStrength: draft.aoStrength,
         textures: get().paintedTextures(),
@@ -313,6 +337,8 @@ export const useStore = create<State & Actions>((set, get) => {
       set({ aoStatus: 'ready', aoUsed })
       const maps = engine.mapsTextures(get().paintedTextures())
       if (maps.join('|') !== get().finishMaps.join('|')) set({ finishMaps: maps })
+      const cspMaterials = engine.cspMaterials(get().paintedTextures())
+      if (cspMaterials.join('|') !== get().cspMaterials.join('|')) set({ cspMaterials })
       refreshOutline()
       if (get().highlight) engine.highlightTextures(get().paintedTextures())
     } catch (err) {
@@ -508,6 +534,8 @@ export const useStore = create<State & Actions>((set, get) => {
     designError: null,
     selectedOffPaint: false,
     finishMaps: [],
+    carParts: null,
+    cspMaterials: [],
     projectPath: null,
     dirty: false,
     recovery: null,
@@ -597,6 +625,7 @@ export const useStore = create<State & Actions>((set, get) => {
         aoStatus: 'idle',
         liveryCandidates: [],
         autoLivery: [],
+        carParts: null,
       })
       try {
         const car = await backend.getCar(carId)
@@ -615,6 +644,7 @@ export const useStore = create<State & Actions>((set, get) => {
           skinStatus,
           liveryCandidates,
           autoLivery: engine.autoLiveryTextures(),
+          carParts: engine.carParts(),
         })
         engine.setPaintFilter(get().paintedTextures())
         if (get().tab === 'livery') void rebake()
@@ -679,6 +709,8 @@ export const useStore = create<State & Actions>((set, get) => {
     updateDraft(patch) {
       if (patch.baseColor !== undefined) pushHistory('baseColor')
       if (patch.baseFinish !== undefined) pushHistory()
+      if (patch.parts !== undefined) pushHistory('parts')
+      if (patch.csp !== undefined) pushHistory('csp')
       const prev = get().draft
       const meta = { ...prev.meta, ...patch.meta }
       const next: LiveryDraft = { ...prev, ...patch, meta }
@@ -690,6 +722,8 @@ export const useStore = create<State & Actions>((set, get) => {
       if (
         patch.baseColor !== undefined ||
         patch.baseFinish !== undefined ||
+        patch.parts !== undefined ||
+        patch.csp !== undefined ||
         patch.aoSource !== undefined ||
         patch.aoStrength !== undefined ||
         patch.liveryTextures !== undefined ||
@@ -698,6 +732,15 @@ export const useStore = create<State & Actions>((set, get) => {
       ) {
         void rebake()
       }
+    },
+
+    updatePart(part, patch) {
+      const parts = get().draft.parts ?? DEFAULT_PARTS
+      get().updateDraft({ parts: { ...parts, [part]: { ...parts[part], ...patch } } })
+    },
+
+    updateCsp(patch) {
+      get().updateDraft({ csp: { ...(get().draft.csp ?? DEFAULT_CSP), ...patch } })
     },
 
     async exportLivery(mode = 'never') {
@@ -724,7 +767,15 @@ export const useStore = create<State & Actions>((set, get) => {
       try {
         // make sure the texture on screen is the one that gets saved
         if (bakeRunning || !engine.hasLivery) await rebake()
-        const { textures, copyFiles } = engine.exportPayload()
+        const extConfig = await engine.cspConfig(
+          draft.csp ?? DEFAULT_CSP,
+          get().paintedTextures(),
+          get().baseSkinId(),
+        )
+        const extraFiles = extConfig
+          ? [{ name: SKIN_CONFIG_FILE, data: new TextEncoder().encode(extConfig) }]
+          : []
+        const { textures, copyFiles } = engine.exportPayload(extraFiles.map((f) => f.name))
         if (!textures.length) throw new Error(i18n.t('livery.noTexture'))
         const preview = await engine.previewSize()
         const previewJpg = await encodeImage(
@@ -743,6 +794,7 @@ export const useStore = create<State & Actions>((set, get) => {
           skinId: draft.skinId,
           textures,
           copyFiles,
+          extraFiles,
           encoding: 'auto',
           uiSkin: { skinname: draft.skinId, ...meta },
           previewJpg,
@@ -1418,10 +1470,17 @@ function parseAutosave(raw: string | null): Recovery | null {
 export function normalizeDraft(raw: unknown): LiveryDraft {
   const stored = asRecord(raw) as Partial<LiveryDraft>
   const design = asRecord(stored.design) as Partial<Design>
+  const parts = asRecord(stored.parts)
   return {
     ...DEFAULT_DRAFT,
     ...stored,
     meta: { ...DEFAULT_DRAFT.meta, ...asRecord(stored.meta) },
+    parts: {
+      rims: { ...DEFAULT_PARTS.rims, ...asRecord(parts.rims) },
+      calipers: { ...DEFAULT_PARTS.calipers, ...asRecord(parts.calipers) },
+      glass: { ...DEFAULT_PARTS.glass, ...asRecord(parts.glass) },
+    },
+    csp: { ...DEFAULT_CSP, ...asRecord(stored.csp) },
     design: {
       layers: Array.isArray(design.layers) ? design.layers : [],
       assets: asRecord(design.assets) as Design['assets'],

@@ -1,5 +1,34 @@
 export const ru = {
   app: { title: 'AC Livery' },
+  parts: {
+    csp: 'Краска CSP',
+    cspEffect: 'Эффект',
+    cspHint:
+      'Пишется в ext_config.ini скина и работает с Custom Shaders Patch; без CSP скин выглядит как обычно. Материалы: {{materials}}. Превью приблизительное.',
+    cspUnavailable:
+      'У перекрашиваемой текстуры нет материала краски (ksPerPixelMultiMap), эффекты CSP недоступны.',
+    flakes: 'Блёстки',
+    pearl: 'Перламутр',
+    colorA: 'Цвет в лоб',
+    colorB: 'Цвет под углом',
+    rims: 'Диски',
+    calipers: 'Суппорты',
+    glass: 'Стёкла',
+    recolor: 'Перекрасить',
+    tint: 'Тонировать',
+    keepLogos: 'Не трогать цветные логотипы',
+    darkness: 'Затемнение',
+    interiorGlass: 'И стёкла, видные только из салона',
+    notFound: 'На этой машине не найдены.',
+    effects: {
+      none: 'Нет',
+      metallic: 'Металлик',
+      pearl: 'Перламутр',
+      chameleon: 'Хамелеон',
+      chrome: 'Хром',
+      matte: 'Мат (CSP)',
+    },
+  },
   project: {
     open: 'Открыть проект…',
     openHint: 'Открыть файл проекта .aclivery (Ctrl+O)',
@@ -63,6 +92,7 @@ export const ru = {
     panels: {
       design: 'Дизайн',
       base: 'Основа',
+      parts: 'Детали',
       save: 'Сохранение',
     },
     target: 'Что перекрашиваем',

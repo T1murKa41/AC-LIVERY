@@ -3,9 +3,10 @@ import { useTranslation } from 'react-i18next'
 import { useStore, type LiveryPanel } from '../state/store'
 import { BasePanel } from './livery/BasePanel'
 import { DesignPanel } from './livery/DesignPanel'
+import { PartsPanel } from './livery/PartsPanel'
 import { ExportBar, SavePanel } from './livery/SavePanel'
 
-const PANELS: LiveryPanel[] = ['design', 'base', 'save']
+const PANELS: LiveryPanel[] = ['design', 'base', 'parts', 'save']
 
 function isTyping(target: EventTarget | null): boolean {
   const el = target as HTMLElement | null
@@ -78,6 +79,7 @@ export function LiveryTab() {
       <div className="form livery-body">
         {panel === 'design' && <DesignPanel />}
         {panel === 'base' && <BasePanel />}
+        {panel === 'parts' && <PartsPanel />}
         {panel === 'save' && <SavePanel />}
       </div>
       <ExportBar />

@@ -1,7 +1,12 @@
 import { expect, test, type Page } from '@playwright/test'
 import { FIN } from '../src/shared/fixtures/syntheticCar'
 
-const PANEL_NAMES = { design: /Дизайн|Design/, base: /Основа|Base/, save: /Сохранение|Save/ }
+const PANEL_NAMES = {
+  design: /Дизайн|Design/,
+  base: /Основа|Base/,
+  parts: /Детали|Parts/,
+  save: /Сохранение|Save/,
+}
 
 /** Switches the sub-panel of the Livery tab. */
 async function panel(page: Page, name: keyof typeof PANEL_NAMES) {
@@ -463,4 +468,68 @@ test('a vinyl only paints the first surface it meets (thin fins)', async ({ page
   // with a copy on the other side each face gets exactly one vinyl
   expect(shares.mirrored.right).toBeGreaterThan(0.3)
   expect(Math.abs(shares.mirrored.left - shares.single.left)).toBeLessThan(0.02)
+})
+
+test('rims, calipers, glass and the CSP paint are written into the skin', async ({ page }) => {
+  await openCar(page)
+  await page.locator('.tabs button').nth(1).click()
+  await panel(page, 'parts')
+  const section = (title: RegExp) =>
+    page.locator('.livery section').filter({ has: page.locator('h3', { hasText: title }) })
+
+  await page.getByRole('combobox', { name: /^(Эффект|Effect)$/ }).selectOption('chameleon')
+  const rims = section(/^(Диски|Rims)$/)
+  await rims.getByRole('checkbox', { name: /Перекрасить|Recolour/ }).check()
+  await rims.locator('.swatch').nth(5).click() // blue
+  await section(/^(Суппорты|Calipers)$/)
+    .getByRole('checkbox', { name: /Перекрасить|Recolour/ })
+    .check()
+  await section(/^(Стёкла|Glass)$/)
+    .getByRole('checkbox', { name: /Тонировать|Tint/ })
+    .check()
+
+  await panel(page, 'save')
+  await page.getByLabel(/^(Название|Name)$/).fill('Parts Test')
+  await page.locator('.btn.primary.wide').click()
+  await expect(page.locator('.notice.ok')).toBeVisible({ timeout: 60_000 })
+
+  const result = await page.evaluate(() => {
+    const all = (globalThis as unknown as { __aclMockFiles: Map<string, Uint8Array> })
+      .__aclMockFiles
+    const dir = 'content/cars/aclivery_test_coupe/skins/parts_test/'
+    // average of the first BC1 endpoint of every block, 0..255
+    const bc1 = (name: string) => {
+      const dds = all.get(dir + name)
+      if (!dds) return null
+      const view = new DataView(dds.buffer, dds.byteOffset, dds.byteLength)
+      const blocks =
+        Math.ceil(view.getUint32(16, true) / 4) * Math.ceil(view.getUint32(12, true) / 4)
+      const sum = [0, 0, 0]
+      for (let i = 0; i < blocks; i++) {
+        const c = view.getUint16(128 + i * 8, true)
+        sum[0]! += ((c >> 11) * 255) / 31
+        sum[1]! += (((c >> 5) & 63) * 255) / 63
+        sum[2]! += ((c & 31) * 255) / 31
+      }
+      return sum.map((v) => v / blocks)
+    }
+    return {
+      names: [...all.keys()].filter((k) => k.startsWith(dir)).map((k) => k.slice(dir.length)),
+      config: new TextDecoder().decode(all.get(dir + 'ext_config.ini')),
+      rim: bc1('rim.dds'),
+      caliper: bc1('caliper.dds'),
+    }
+  })
+  expect(result.names).toEqual(
+    expect.arrayContaining(['rim.dds', 'caliper.dds', 'glass.dds', 'ext_config.ini']),
+  )
+  expect(result.config).toContain('[Material_CarPaint_Chameleon]')
+  expect(result.config).toContain('Materials = Material_Body')
+  // blue rims (the stock ones are silver) and red calipers (stock: yellow)
+  const [rr, rg, rb] = result.rim!
+  expect(rb!).toBeGreaterThan(rr! + 60)
+  expect(rb!).toBeGreaterThan(rg! + 30)
+  const [cr, cg, cb] = result.caliper!
+  expect(cr!).toBeGreaterThan(cg! + 80)
+  expect(cr!).toBeGreaterThan(cb! + 80)
 })

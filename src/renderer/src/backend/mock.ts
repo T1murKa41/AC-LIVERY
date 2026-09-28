@@ -153,6 +153,7 @@ export function createMockBackend(): Backend {
           files.set(dir + f, data)
         }
       }
+      for (const f of req.extraFiles ?? []) files.set(dir + f.name, f.data)
       for (const t of req.textures) {
         const format =
           req.encoding === 'auto' ? (hasTransparency(t.rgba) ? 'BC3' : 'BC1') : req.encoding

@@ -107,6 +107,69 @@ export interface Asset {
   data: string
 }
 
+/** Recolour of a separate part (rims, calipers), keeping its shading. */
+export interface PartTint {
+  enabled: boolean
+  color: string
+  /** Leave strongly coloured pixels (logos, lettering) as they are. */
+  keepLogos: boolean
+}
+
+export interface RimsPaint extends PartTint {
+  finish: BaseFinish
+}
+
+export interface GlassTint {
+  enabled: boolean
+  color: string
+  /** 0 keeps the stock transparency, 1 makes the glass opaque. */
+  darkness: number
+  /** Also tint glass that is only seen from the cockpit. */
+  interior: boolean
+}
+
+export interface PartsPaint {
+  rims: RimsPaint
+  calipers: PartTint
+  glass: GlassTint
+}
+
+export const DEFAULT_PARTS: PartsPaint = {
+  rims: { enabled: false, color: '#1b1c1f', keepLogos: true, finish: 'stock' },
+  calipers: { enabled: false, color: '#d7261e', keepLogos: true },
+  glass: { enabled: false, color: '#10151c', darkness: 0.45, interior: false },
+}
+
+/** Car paint effects of Custom Shaders Patch, written to the skin's ext_config.ini. */
+export type CspEffect = 'none' | 'metallic' | 'pearl' | 'chameleon' | 'chrome' | 'matte'
+export const CSP_EFFECTS: CspEffect[] = [
+  'none',
+  'metallic',
+  'pearl',
+  'chameleon',
+  'chrome',
+  'matte',
+]
+
+export interface CspPaint {
+  effect: CspEffect
+  /** Metallic flakes, 0..1 (CSP FlakesK). */
+  flakes: number
+  /** Pearlescent specular, 0..1. */
+  pearl: number
+  /** Chameleon colours: facing the viewer and at glancing angles. */
+  colorA: string
+  colorB: string
+}
+
+export const DEFAULT_CSP: CspPaint = {
+  effect: 'none',
+  flakes: 0.3,
+  pearl: 0.8,
+  colorA: '#33007f',
+  colorB: '#ffcc00',
+}
+
 export interface LayerGroup {
   name: string
 }

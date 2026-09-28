@@ -21,6 +21,9 @@ import { isSafeSegment } from './paths'
 
 export type DdsFormat = 'BC1' | 'BC3' | 'BGRA8'
 
+/** Extra files are configs, not textures. */
+const MAX_EXTRA_FILE = 1024 * 1024
+
 export interface Encoders {
   dds: {
     name: 'texconv' | 'builtin'
@@ -100,6 +103,13 @@ export async function exportSkin(
         if (!isSafeSegment(file)) throw new Error(`Invalid file name "${file}"`)
         await copyFile(join(carPath, 'skins', fromSkin, file), join(staging, file))
       }
+    }
+    for (const extra of request.extraFiles ?? []) {
+      if (!isSafeSegment(extra.name) || extra.name === SKIN_MARKER_FILE) {
+        throw new Error(`Invalid file name "${extra.name}"`)
+      }
+      if (extra.data.byteLength > MAX_EXTRA_FILE) throw new Error(`${extra.name} is too large`)
+      await writeFile(join(staging, extra.name), extra.data)
     }
     for (const tex of request.textures) {
       if (!isSafeSegment(tex.name)) throw new Error(`Invalid texture name "${tex.name}"`)
