@@ -22,6 +22,16 @@ export interface BakeParams {
   aoStrength: number
 }
 
+export interface SkinTextureStatus {
+  texture: string
+  file?: string
+  status: 'loaded' | 'missing' | 'error'
+  format?: string
+  width?: number
+  height?: number
+  error?: string
+}
+
 export interface AoResolution {
   /** Source actually used ('model', 'skin:<id>' or 'none'). */
   used: AoSource
@@ -48,6 +58,7 @@ export class EngineController {
   private readonly aoCache = new Map<string, THREE.DataTexture | null>()
   private liveryActive = false
   private autoAoPick: AoSource | null = null
+  private lastSkinStatus: SkinTextureStatus[] = []
   private generation = 0
 
   constructor(
@@ -96,6 +107,7 @@ export class EngineController {
     for (const t of this.aoCache.values()) t?.dispose()
     this.aoCache.clear()
     this.autoAoPick = null
+    this.lastSkinStatus = []
     this.liveryActive = false
     this.analysis = null
   }
@@ -120,17 +132,47 @@ export class EngineController {
     return info
   }
 
-  /** Shows a stock skin (null = textures embedded in the model). */
-  async showSkin(skinId: string | null): Promise<void> {
+  /**
+   * Shows a stock skin (null = textures embedded in the model) and reports,
+   * for every paintable texture, whether the skin's file was used.
+   */
+  async showSkin(skinId: string | null): Promise<SkinTextureStatus[]> {
     this.liveryActive = false
     this.viewer.clearOverrides()
-    if (!skinId || !this.analysis) return
-    await Promise.all(
-      this.analysis.paintable.map(async (name) => {
-        const info = await this.skinTexture(skinId, name).catch(() => null)
-        if (info && !this.liveryActive) this.viewer.setOverride(name, info.texture)
+    if (!skinId || !this.analysis) return []
+    const skin = this.car?.skins.find((s) => s.id === skinId)
+    const status = await Promise.all(
+      this.analysis.paintable.map(async (name): Promise<SkinTextureStatus> => {
+        const file = skin && findFile(skin.files, name)
+        if (!file) return { texture: name, status: 'missing' }
+        try {
+          const info = await this.skinTexture(skinId, name)
+          if (!info) return { texture: name, file, status: 'missing' }
+          if (!this.liveryActive) this.viewer.setOverride(name, info.texture)
+          return {
+            texture: name,
+            file,
+            status: 'loaded',
+            format: info.format,
+            width: info.width,
+            height: info.height,
+          }
+        } catch (err) {
+          return {
+            texture: name,
+            file,
+            status: 'error',
+            error: err instanceof Error ? err.message : String(err),
+          }
+        }
       }),
     )
+    this.lastSkinStatus = status
+    return status
+  }
+
+  get skinStatus(): readonly SkinTextureStatus[] {
+    return this.lastSkinStatus
   }
 
   // -------------------------------------------------------------------------
@@ -318,6 +360,18 @@ export class EngineController {
 
   setView(view: ViewMode): void {
     this.viewer.setView(view)
+  }
+
+  set onPick(handler: ((meshIndex: number | null) => void) | null) {
+    this.viewer.onPick = handler
+  }
+
+  highlightMesh(meshIndex: number | null): void {
+    this.viewer.highlightMesh(meshIndex)
+  }
+
+  setShowHidden(show: boolean): void {
+    this.viewer.setShowHidden(show)
   }
 
   highlightLivery(on: boolean): void {

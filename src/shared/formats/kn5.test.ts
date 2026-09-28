@@ -15,6 +15,7 @@ describe('kn5', () => {
       'ksPerPixelMultiMap',
       'ksPerPixel',
       'ksPerPixel',
+      'ksPerPixelAT',
     ])
     const names: string[] = []
     walkKn5(kn5.root, (n) => names.push(n.name))

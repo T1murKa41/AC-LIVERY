@@ -7,9 +7,23 @@ export function SkinsTab() {
   const shown = useStore((s) => s.shownSkin)
   const showSkin = useStore((s) => s.showSkin)
   const editSkin = useStore((s) => s.editSkin)
+  const skinStatus = useStore((s) => s.skinStatus)
   if (!car) return null
+  const failed = skinStatus.filter((s) => s.status === 'error')
   return (
     <div className="skin-list">
+      {failed.length > 0 && (
+        <div className="notice warn skin-errors">
+          <p>{t('skins.loadErrors')}</p>
+          <ul>
+            {failed.map((f) => (
+              <li key={f.texture} className="mono">
+                {f.file}: {f.error}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
       <button
         className={`skin-item ${shown === null ? 'selected' : ''}`}
         onClick={() => void showSkin(null)}

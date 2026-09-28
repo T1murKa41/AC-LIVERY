@@ -21,6 +21,9 @@ export type DdsFormat =
   | 'L8'
   | 'A8'
   | 'L8A8'
+  | 'B5G6R5'
+  | 'B5G5R5A1'
+  | 'B4G4R4A4'
 
 export interface DdsMip {
   width: number
@@ -76,6 +79,8 @@ const DXGI_FORMATS: Record<number, [DdsFormat, boolean]> = {
   78: ['BC3', true],
   80: ['BC4', false],
   83: ['BC5', false],
+  85: ['B5G6R5', false],
+  86: ['B5G5R5A1', false],
   87: ['BGRA8', false],
   88: ['BGRX8', false],
   91: ['BGRA8', true],
@@ -84,6 +89,7 @@ const DXGI_FORMATS: Record<number, [DdsFormat, boolean]> = {
   96: ['BC6H', false],
   98: ['BC7', false],
   99: ['BC7', true],
+  115: ['B4G4R4A4', false],
 }
 
 export function isBlockCompressed(format: DdsFormat): boolean {
@@ -103,6 +109,9 @@ export function bytesPerPixel(format: DdsFormat): number {
     case 'BGR8':
       return 3
     case 'L8A8':
+    case 'B5G6R5':
+    case 'B5G5R5A1':
+    case 'B4G4R4A4':
       return 2
     default:
       return 1
@@ -150,6 +159,11 @@ function legacyFormat(
       if (r === 0x000000ff && g === 0x0000ff00 && b === 0x00ff0000) return 'RGBA8'
     }
     if (bits === 24 && r === 0xff0000 && g === 0x00ff00 && b === 0x0000ff) return 'BGR8'
+    if (bits === 16) {
+      if (r === 0xf800 && g === 0x07e0 && b === 0x001f) return 'B5G6R5'
+      if (r === 0x7c00 && g === 0x03e0 && b === 0x001f) return 'B5G5R5A1'
+      if (r === 0x0f00 && g === 0x00f0 && b === 0x000f) return 'B4G4R4A4'
+    }
   }
   if (flags & DDPF_LUMINANCE) {
     if (bits === 8) return 'L8'
@@ -258,6 +272,30 @@ export function decodeDdsMip(format: DdsFormat, mip: DdsMip): Uint8Array {
         }
       }
       return out
+    case 'B5G6R5':
+    case 'B5G5R5A1':
+    case 'B4G4R4A4':
+      for (let i = 0; i < width * height; i++) {
+        const v = data[i * 2]! | (data[i * 2 + 1]! << 8)
+        const o = i * 4
+        if (format === 'B5G6R5') {
+          out[o] = expand((v >> 11) & 31, 5)
+          out[o + 1] = expand((v >> 5) & 63, 6)
+          out[o + 2] = expand(v & 31, 5)
+          out[o + 3] = 255
+        } else if (format === 'B5G5R5A1') {
+          out[o] = expand((v >> 10) & 31, 5)
+          out[o + 1] = expand((v >> 5) & 31, 5)
+          out[o + 2] = expand(v & 31, 5)
+          out[o + 3] = v & 0x8000 ? 255 : 0
+        } else {
+          out[o] = ((v >> 8) & 15) * 17
+          out[o + 1] = ((v >> 4) & 15) * 17
+          out[o + 2] = (v & 15) * 17
+          out[o + 3] = ((v >> 12) & 15) * 17
+        }
+      }
+      return out
     case 'L8A8':
       for (let i = 0; i < width * height; i++) {
         out[i * 4] = out[i * 4 + 1] = out[i * 4 + 2] = data[i * 2]!
@@ -267,6 +305,11 @@ export function decodeDdsMip(format: DdsFormat, mip: DdsMip): Uint8Array {
     default:
       throw new FormatError(`CPU decoding of ${format} is not supported`)
   }
+}
+
+/** Expands an n-bit channel value to 8 bits. */
+function expand(v: number, bits: number): number {
+  return Math.round((v * 255) / ((1 << bits) - 1))
 }
 
 function unpack565(c: number, out: number[], o: number): void {

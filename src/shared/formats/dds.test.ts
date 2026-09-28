@@ -97,6 +97,34 @@ describe('dds', () => {
     expect(dds.srgb).toBe(true)
   })
 
+  it('decodes 16-bit legacy formats', () => {
+    const make = (masks: [number, number, number, number], flags: number, pixel: number) => {
+      const bytes = new Uint8Array(128 + 2)
+      const v = new DataView(bytes.buffer)
+      v.setUint32(0, 0x20534444, true)
+      v.setUint32(4, 124, true)
+      v.setUint32(12, 1, true)
+      v.setUint32(16, 1, true)
+      v.setUint32(28, 1, true)
+      v.setUint32(76, 32, true)
+      v.setUint32(80, flags, true)
+      v.setUint32(88, 16, true)
+      masks.forEach((m, i) => v.setUint32(92 + i * 4, m, true))
+      v.setUint16(128, pixel, true)
+      const dds = parseDds(bytes)
+      return [dds.format, [...decodeDdsMip(dds.format, dds.mips[0]!)]]
+    }
+    expect(make([0xf800, 0x07e0, 0x001f, 0], 0x40, 0xf800)).toEqual(['B5G6R5', [255, 0, 0, 255]])
+    expect(make([0x7c00, 0x03e0, 0x001f, 0x8000], 0x41, 0x83e0)).toEqual([
+      'B5G5R5A1',
+      [0, 255, 0, 255],
+    ])
+    expect(make([0x0f00, 0x00f0, 0x000f, 0xf000], 0x41, 0x700f)).toEqual([
+      'B4G4R4A4',
+      [0, 0, 255, 119],
+    ])
+  })
+
   it('rejects non-DDS data', () => {
     expect(() => parseDds(new Uint8Array(200))).toThrow()
   })

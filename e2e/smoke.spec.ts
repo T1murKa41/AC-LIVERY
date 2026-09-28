@@ -61,3 +61,16 @@ test('exporting right after opening the livery tab waits for the bake', async ({
   await page.locator('.btn.primary.wide').click()
   await expect(page.locator('.notice.ok')).toBeVisible({ timeout: 60_000 })
 })
+
+test('model tab builds a diagnostics report', async ({ page }) => {
+  await page.goto('/')
+  await page.locator('.car-item').first().click()
+  await expect(page.locator('.view-toolbar')).toBeVisible({ timeout: 60_000 })
+  await page.locator('.skin-main').nth(1).click()
+  await page.locator('.tabs button').nth(2).click()
+  await page.getByRole('button', { name: /Скопировать отчёт|Copy report/ }).click()
+  const report = await page.locator('.report-text').inputValue()
+  expect(report).toContain('AC Livery diagnostics')
+  expect(report).toContain('decals.dds: decals.dds BC3 128x64')
+  expect(report).toContain('[ksPerPixelAT]')
+})

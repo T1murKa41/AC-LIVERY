@@ -7,6 +7,12 @@ export interface LoadedMesh {
   materialId: number
   /** Not shown by default (cockpit HR, blurred rims, damage, inactive nodes). */
   hidden: boolean
+  /** Why the mesh is hidden, for diagnostics. */
+  hiddenReason: HiddenReason | null
+  /** Names of the parent nodes, root first. */
+  path: string
+  /** Flags stored in the kn5 node. */
+  flags: { active: boolean; visible: boolean; transparent: boolean; renderable: boolean }
   positions: Float32Array
   normals: Float32Array
   uvs: Float32Array
@@ -15,6 +21,8 @@ export interface LoadedMesh {
   /** Row-major world matrix (same memory layout as three.js Matrix4.fromArray). */
   world: Float32Array
 }
+
+export type HiddenReason = 'inactive' | 'invisible' | 'name' | 'parent'
 
 export interface LoadedCar {
   version: number

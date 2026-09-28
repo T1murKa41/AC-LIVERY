@@ -2,7 +2,7 @@
 
 import { analyzeCar } from '@shared/car/analysis'
 import { parseKn5, walkKn5 } from '@shared/formats/kn5'
-import type { Kn5WorkerRequest, Kn5WorkerResponse, LoadedMesh } from './types'
+import type { HiddenReason, Kn5WorkerRequest, Kn5WorkerResponse, LoadedMesh } from './types'
 
 const HIDDEN_RE = /(_HR$)|(^|_)BLUR|DAMAGE|(^|_)SHADOW/i
 
@@ -12,17 +12,31 @@ self.onmessage = (event: MessageEvent<Kn5WorkerRequest>) => {
     const kn5 = parseKn5(new Uint8Array(bytes))
     const analysis = analyzeCar(kn5, { skinFileNames })
     const meshes: LoadedMesh[] = []
-    const hiddenNodes = new Set<unknown>()
+    const hiddenNodes = new Map<unknown, HiddenReason>()
+    const paths = new Map<unknown, string>()
     walkKn5(kn5.root, (node, world, parent) => {
-      const hidden =
-        (parent !== null && hiddenNodes.has(parent)) || !node.active || HIDDEN_RE.test(node.name)
-      if (hidden) hiddenNodes.add(node)
+      const parentPath = parent ? (paths.get(parent) ?? '') : ''
+      paths.set(node, parentPath ? `${parentPath}/${node.name}` : node.name)
+      let reason: HiddenReason | null = null
+      if (parent !== null && hiddenNodes.has(parent)) reason = 'parent'
+      else if (!node.active) reason = 'inactive'
+      else if (HIDDEN_RE.test(node.name)) reason = 'name'
+      if (reason) hiddenNodes.set(node, reason)
       if (node.kind === 'base') return
+      if (!reason && !node.visible) reason = 'invisible'
       meshes.push({
         index: meshes.length,
         name: node.name,
         materialId: node.materialId,
-        hidden: hidden || !node.visible,
+        hidden: reason !== null,
+        hiddenReason: reason,
+        path: parentPath,
+        flags: {
+          active: node.active,
+          visible: node.visible,
+          transparent: node.transparent,
+          renderable: node.kind === 'mesh' ? node.renderable : true,
+        },
         positions: node.positions,
         normals: node.normals,
         uvs: node.uvs,

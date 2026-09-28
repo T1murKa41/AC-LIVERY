@@ -14,8 +14,8 @@ import { getProperty, getTextureMapping, type Kn5Material } from '@shared/format
 
 export const LIGHTING = {
   sunDir: new THREE.Vector3(0.45, 0.8, 0.35).normalize(),
-  sunColor: new THREE.Vector3(1.45, 1.42, 1.36),
-  ambientColor: new THREE.Vector3(1.05, 1.08, 1.12),
+  sunColor: new THREE.Vector3(1.22, 1.2, 1.15),
+  ambientColor: new THREE.Vector3(0.9, 0.93, 0.97),
 }
 
 const SKY_GLSL = /* glsl */ `
@@ -128,6 +128,12 @@ void main() {
 }
 `
 
+// kn5 enums (same numbering as Content Manager's Kn5Material)
+const BLEND_ALPHA = 1
+const BLEND_COVERAGE = 2
+const DEPTH_NORMAL = 0
+const DEPTH_OFF = 2
+
 export type TextureResolver = (name: string) => THREE.Texture | null
 
 function num(material: Kn5Material, name: string, fallback: number): number {
@@ -156,8 +162,20 @@ export function createAcMaterial(
   const reflective = multimap || shader.includes('reflection') || shader.includes('carpaint')
   const names = materialTextureNames(material)
   const tex = (key: keyof typeof names) => (names[key] ? resolve(names[key]!) : null)
-  const blended = material.blendMode === 1
+  const blended = material.blendMode === BLEND_ALPHA
+  const alphaTested =
+    material.alphaTested ||
+    material.blendMode === BLEND_COVERAGE ||
+    /(^|_|perpixel)at($|_)/.test(shader)
   const emissive = getProperty(material, 'ksEmissive')?.c ?? [0, 0, 0]
+  // Decals and logos usually sit on (almost) the same surface as the body.
+  // AC draws them after the body; here they are pulled slightly towards the
+  // camera so they win the depth test instead of flickering or disappearing.
+  const decalLike =
+    blended ||
+    alphaTested ||
+    material.depthMode !== DEPTH_NORMAL ||
+    /decal|logo|sticker|sponsor/i.test(material.name)
 
   const m = new THREE.ShaderMaterial({
     vertexShader: VERTEX,
@@ -188,7 +206,7 @@ export function createAcMaterial(
       sunSpecularEXP: { value: num(material, 'sunSpecularEXP', 100) },
       reflective: { value: reflective },
       multimap: { value: multimap },
-      alphaTested: { value: material.alphaTested || material.blendMode === 2 },
+      alphaTested: { value: alphaTested },
       blended: { value: blended },
       sunDir: { value: LIGHTING.sunDir },
       sunColor: { value: LIGHTING.sunColor },
@@ -196,10 +214,15 @@ export function createAcMaterial(
       highlight: { value: 0 },
     },
     transparent: blended,
-    depthWrite: !blended,
+    depthWrite: !blended && material.depthMode === DEPTH_NORMAL,
+    depthTest: material.depthMode !== DEPTH_OFF,
     side: THREE.DoubleSide,
+    polygonOffset: decalLike,
+    polygonOffsetFactor: decalLike ? -1 : 0,
+    polygonOffsetUnits: decalLike ? -4 : 0,
   })
   m.name = material.name
+  m.userData.decalLike = decalLike
   m.userData.textureNames = names
   return m
 }

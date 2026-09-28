@@ -14,7 +14,7 @@ describe('analyzeCar', () => {
   const analysis = analyzeCar(kn5, { skinFileNames: skinFiles(car.files) })
 
   it('finds the livery texture and its maps', () => {
-    expect(analysis.paintable).toEqual([BODY_TEXTURE])
+    expect(analysis.paintable).toEqual([BODY_TEXTURE, 'decals.dds'])
     expect(analysis.bodyTexture).toBe(BODY_TEXTURE)
     expect(analysis.bodyMapsTexture).toBe(MAPS_TEXTURE)
     expect(analysis.bodyMeshes.map((i) => analysis.meshes[i]!.name)).toEqual(['BODY_PAINT'])

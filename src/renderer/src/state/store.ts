@@ -17,7 +17,9 @@ import {
   encodeImage,
   renderLiveryIcon,
   type AoSource,
+  type SkinTextureStatus,
 } from '../engine/controller'
+import { buildReport, describeMesh } from '../engine/report'
 import type { ViewMode } from '../engine/viewer'
 import i18n from '../i18n'
 
@@ -82,6 +84,9 @@ interface State {
   exportState: ExportState
   view: ViewMode
   highlight: boolean
+  skinStatus: SkinTextureStatus[]
+  pickedMesh: number | null
+  showHidden: boolean
 }
 
 interface Actions {
@@ -101,6 +106,10 @@ interface Actions {
   dismissExport(): void
   setView(view: ViewMode): void
   setHighlight(on: boolean): void
+  setShowHidden(show: boolean): void
+  clearPick(): void
+  diagnosticsReport(): string
+  describePicked(): string[]
   attachEngine(controller: EngineController | null): void
 }
 
@@ -165,6 +174,9 @@ export const useStore = create<State & Actions>((set, get) => {
     exportState: { status: 'idle' },
     view: 'perspective',
     highlight: false,
+    skinStatus: [],
+    pickedMesh: null,
+    showHidden: false,
 
     async init() {
       const settings = await get().backend.getSettings()
@@ -235,6 +247,9 @@ export const useStore = create<State & Actions>((set, get) => {
         shownSkin: null,
         exportState: { status: 'idle' },
         highlight: false,
+        skinStatus: [],
+        pickedMesh: null,
+        showHidden: false,
         view: 'perspective',
         aoUsed: null,
         aoStatus: 'idle',
@@ -265,6 +280,7 @@ export const useStore = create<State & Actions>((set, get) => {
     setTab(tab) {
       const prev = get().tab
       set({ tab })
+      if (tab !== 'info' && get().pickedMesh !== null) get().clearPick()
       if (tab === 'livery' && prev !== 'livery') void rebake()
       if (tab !== 'livery' && prev === 'livery') void get().showSkin(get().shownSkin)
     },
@@ -272,7 +288,8 @@ export const useStore = create<State & Actions>((set, get) => {
     async showSkin(skinId) {
       set({ shownSkin: skinId })
       if (get().tab === 'livery') set({ tab: 'skins' })
-      await engine?.showSkin(skinId)
+      const status = (await engine?.showSkin(skinId)) ?? []
+      if (get().shownSkin === skinId) set({ skinStatus: status })
     },
 
     async editSkin(skinId) {
@@ -404,8 +421,39 @@ export const useStore = create<State & Actions>((set, get) => {
       set({ highlight: on })
     },
 
+    setShowHidden(show) {
+      engine?.setShowHidden(show)
+      set({ showHidden: show })
+    },
+
+    clearPick() {
+      engine?.highlightMesh(null)
+      set({ pickedMesh: null })
+    },
+
+    diagnosticsReport() {
+      const { car, shownSkin, skinStatus } = get()
+      const loaded = engine?.viewer.loadedCar
+      if (!car || !loaded) return ''
+      return buildReport({ car, loaded, shownSkin, skinStatus })
+    },
+
+    describePicked() {
+      const loaded = engine?.viewer.loadedCar
+      const index = get().pickedMesh
+      return loaded && index !== null ? describeMesh(loaded, index) : []
+    },
+
     attachEngine(controller) {
       engine = controller
+      if (controller) {
+        controller.onPick = (index) => {
+          // picking is a diagnostics tool of the Model tab for now
+          if (get().tab !== 'info') return
+          controller.highlightMesh(index)
+          set({ pickedMesh: index })
+        }
+      }
     },
   }
 })

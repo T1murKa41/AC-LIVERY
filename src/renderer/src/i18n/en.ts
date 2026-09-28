@@ -39,6 +39,7 @@ export const en: Shape<typeof ru> = {
   },
   tabs: { skins: 'Skins', livery: 'Livery', info: 'Model' },
   skins: {
+    loadErrors: 'Some skin textures failed to load; model textures are shown instead:',
     model: 'Model textures',
     ours: 'AC Livery',
     edit: 'Edit',
@@ -87,6 +88,13 @@ export const en: Shape<typeof ru> = {
     size: 'Body size',
     uvOverlap: 'Shared side UVs',
     meshes: 'Meshes',
+    pickHint: 'Click a part of the car to see its mesh and material.',
+    picked: 'Selected part',
+    clearPick: 'Clear',
+    showHidden: 'Show hidden meshes',
+    report: 'Copy report',
+    reportCopied: 'Report copied',
+    reportHint: 'If the car looks different from the game, send this report to the developer.',
     highlight: 'Highlight livery parts',
     none: 'none',
     warnings: {

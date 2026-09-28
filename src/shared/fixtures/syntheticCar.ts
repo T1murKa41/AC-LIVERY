@@ -169,6 +169,33 @@ function buildGlass(): MeshBuilder {
   return m
 }
 
+/**
+ * Sponsor decal lying exactly on the left door, like the separate logo meshes
+ * of Kunos cars. It only shows up if coplanar decals win the depth test and
+ * the alpha test of ksPerPixelAT is honoured.
+ */
+function buildDecal(): MeshBuilder {
+  const m = newBuilder()
+  const x = HALF_W
+  quad(
+    m,
+    [
+      [x, 0.75, -0.5],
+      [x, 0.75, 0.7],
+      [x, 0.45, 0.7],
+      [x, 0.45, -0.5],
+    ],
+    [
+      [1, 0],
+      [0, 0],
+      [0, 1],
+      [1, 1],
+    ],
+    [1, 0, 0],
+  )
+  return m
+}
+
 function buildWheel(outwardX: number): MeshBuilder {
   const m = newBuilder()
   const r = 0.33
@@ -352,6 +379,29 @@ function encode(img: RgbaImage): Uint8Array {
   return writeDds(img.data, img.width, img.height, 'BC1')
 }
 
+function encodeAlpha(img: RgbaImage): Uint8Array {
+  return writeDds(img.data, img.width, img.height, 'BC3')
+}
+
+/** Transparent decal sheet with a coloured "logo": a thick frame and a bar. */
+function paintDecal(rgb: [number, number, number]): RgbaImage {
+  const w = 128
+  const h = 64
+  const data = new Uint8Array(w * h * 4)
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const frame =
+        (x >= 8 && x < 120 && y >= 8 && y < 56 && !(x >= 18 && x < 110 && y >= 18 && y < 46)) ||
+        (y >= 28 && y < 36 && x >= 30 && x < 98)
+      const o = (y * w + x) * 4
+      data.set(frame ? [...rgb, 255] : [0, 0, 0, 0], o)
+    }
+  }
+  return { width: w, height: h, data }
+}
+
+export const DECAL_TEXTURE = 'decals.dds'
+
 // ---------------------------------------------------------------------------
 
 export interface SyntheticCarOptions {
@@ -400,6 +450,13 @@ export function buildSyntheticCar(options: SyntheticCarOptions = {}): SyntheticC
       ],
       1,
     ),
+    // alpha testing comes from the shader name only, as in many stock cars
+    material('Material_Decals', 'ksPerPixelAT', { txDiffuse: DECAL_TEXTURE }, [
+      prop('ksAmbient', 0.45),
+      prop('ksDiffuse', 0.45),
+      prop('ksSpecular', 0.2),
+      prop('ksSpecularEXP', 30),
+    ]),
   ]
 
   const wheel = (name: string, x: number, z: number): Kn5Node => ({
@@ -424,6 +481,7 @@ export function buildSyntheticCar(options: SyntheticCarOptions = {}): SyntheticC
         children: [
           meshNode('BODY_PAINT', 0, buildBody(options.sharedSideUv ?? false)),
           meshNode('GLASS_WINDSCREEN', 2, buildGlass()),
+          meshNode('DECAL_SPONSOR_L', 3, buildDecal()),
         ],
       },
       wheel('WHEEL_LF', HALF_W + 0.01, 1.45),
@@ -444,6 +502,7 @@ export function buildSyntheticCar(options: SyntheticCarOptions = {}): SyntheticC
       { name: MAPS_TEXTURE, active: 1, data: encode(maps) },
       { name: 'rim.dds', active: 1, data: encode(image(64, [150, 150, 155])) },
       { name: 'glass.dds', active: 1, data: encode(image(16, [30, 35, 40])) },
+      { name: DECAL_TEXTURE, active: 1, data: encodeAlpha(paintDecal([255, 120, 20])) },
     ],
     materials,
     root,
@@ -459,6 +518,7 @@ export function buildSyntheticCar(options: SyntheticCarOptions = {}): SyntheticC
       serializeUiSkin({ skinname: 'White', number: '0' }),
     ),
     'skins/01_red_stripe/Skin_00.dds': encode(red),
+    [`skins/01_red_stripe/${DECAL_TEXTURE}`]: encodeAlpha(paintDecal([30, 90, 230])),
     'skins/01_red_stripe/ui_skin.json': new TextEncoder().encode(
       serializeUiSkin({
         skinname: 'Red Stripe',

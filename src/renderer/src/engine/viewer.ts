@@ -66,6 +66,16 @@ export class Viewer {
   private view: ViewMode = 'perspective'
   private frameRequested = false
   private disposed = false
+  private showHidden = false
+  private picked: {
+    mesh: THREE.Mesh
+    original: THREE.Material
+    clone: THREE.ShaderMaterial
+  } | null = null
+  private readonly raycaster = new THREE.Raycaster()
+  private pointerDown: { x: number; y: number } | null = null
+  /** Called with the kn5 mesh index under the cursor after a click (null = empty space). */
+  onPick: ((meshIndex: number | null) => void) | null = null
   private readonly resizeObserver: ResizeObserver
 
   constructor(private readonly canvas: HTMLCanvasElement) {
@@ -94,6 +104,16 @@ export class Viewer {
     this.background.frustumCulled = false
     this.background.renderOrder = -1000
     this.scene.add(this.background)
+
+    canvas.addEventListener('pointerdown', (e) => {
+      this.pointerDown = { x: e.clientX, y: e.clientY }
+    })
+    canvas.addEventListener('pointerup', (e) => {
+      const down = this.pointerDown
+      this.pointerDown = null
+      if (!down || Math.hypot(e.clientX - down.x, e.clientY - down.y) > 4) return
+      this.onPick?.(this.pick(e.clientX, e.clientY))
+    })
 
     this.resizeObserver = new ResizeObserver(() => this.resize())
     this.resizeObserver.observe(canvas)
@@ -180,9 +200,10 @@ export class Viewer {
       mesh.name = src.name
       mesh.matrixAutoUpdate = false
       mesh.matrix.fromArray(src.world)
-      mesh.visible = !src.hidden
+      mesh.visible = this.showHidden || !src.hidden
       mesh.userData.index = src.index
       if (material.transparent) mesh.renderOrder = 10
+      else if (material.userData.decalLike) mesh.renderOrder = 5
       root.add(mesh)
       this.meshes.push({ mesh, source: src })
     }
@@ -197,7 +218,7 @@ export class Viewer {
   private addGround(): void {
     if (!this.frame || !this.carRoot) return
     const box = new THREE.Box3()
-    for (const { mesh } of this.meshes) if (mesh.visible) box.expandByObject(mesh)
+    for (const { mesh, source } of this.meshes) if (!source.hidden) box.expandByObject(mesh)
     const f = this.frame
     const plane = new THREE.PlaneGeometry(f.width * 1.6, f.length * 1.35)
     const ground = new THREE.Mesh(
@@ -224,6 +245,7 @@ export class Viewer {
   }
 
   private clearCar(): void {
+    this.highlightMesh(null)
     if (this.carRoot) {
       this.scene.remove(this.carRoot)
       for (const { mesh } of this.meshes) mesh.geometry.dispose()
@@ -262,15 +284,69 @@ export class Viewer {
     const key = name.toLowerCase()
     if (texture) this.overrides.set(key, texture)
     else this.overrides.delete(key)
-    const resolve = (n: string) => this.resolveTexture(n)
-    for (const m of this.materials) refreshMaterialTextures(m, resolve)
-    this.requestRender()
+    this.refreshTextures()
   }
 
   clearOverrides(): void {
     this.overrides.clear()
+    this.refreshTextures()
+  }
+
+  private refreshTextures(): void {
     const resolve = (n: string) => this.resolveTexture(n)
     for (const m of this.materials) refreshMaterialTextures(m, resolve)
+    if (this.picked) refreshMaterialTextures(this.picked.clone, resolve)
+    this.requestRender()
+  }
+
+  /** Shows meshes that are hidden by default (cockpit HR, damage, inactive nodes...). */
+  setShowHidden(show: boolean): void {
+    this.showHidden = show
+    for (const { mesh, source } of this.meshes) mesh.visible = show || !source.hidden
+    this.requestRender()
+  }
+
+  /** Returns the kn5 mesh index at the given client coordinates. */
+  pick(clientX: number, clientY: number): number | null {
+    if (!this.carRoot) return null
+    const rect = this.canvas.getBoundingClientRect()
+    const ndc = new THREE.Vector2(
+      ((clientX - rect.left) / rect.width) * 2 - 1,
+      -((clientY - rect.top) / rect.height) * 2 + 1,
+    )
+    this.raycaster.setFromCamera(ndc, this.camera)
+    const hits = this.raycaster.intersectObjects(
+      this.meshes.filter((m) => m.mesh.visible).map((m) => m.mesh),
+      false,
+    )
+    const first = hits[0]
+    if (!first) return null
+    // decals lie on (or just below) the body: among hits at the same spot,
+    // prefer the one drawn on top
+    const near = hits.filter((h) => h.distance - first.distance < 0.005)
+    const top = near.reduce((best, h) =>
+      h.object.renderOrder > best.object.renderOrder ? h : best,
+    )
+    return top.object.userData.index as number
+  }
+
+  /** Tints one mesh (independently of other meshes sharing its material). */
+  highlightMesh(meshIndex: number | null): void {
+    if (this.picked) {
+      this.picked.mesh.material = this.picked.original
+      this.picked.clone.dispose()
+      this.picked = null
+    }
+    const entry =
+      meshIndex === null ? undefined : this.meshes.find((m) => m.source.index === meshIndex)
+    if (entry) {
+      const original = entry.mesh.material as THREE.ShaderMaterial
+      const clone = original.clone()
+      clone.userData = { ...original.userData }
+      clone.uniforms.highlight!.value = 1
+      entry.mesh.material = clone
+      this.picked = { mesh: entry.mesh, original, clone }
+    }
     this.requestRender()
   }
 
@@ -310,7 +386,7 @@ export class Viewer {
           .add(left.clone().multiplyScalar(0.9))
           .add(up.clone().multiplyScalar(0.38))
           .normalize()
-        const dist = (radius / Math.sin(THREE.MathUtils.degToRad(this.persp.fov / 2))) * 1.05
+        const dist = (radius / Math.sin(THREE.MathUtils.degToRad(this.persp.fov / 2))) * 0.8
         this.persp.position.copy(origin).addScaledVector(dir, dist)
         this.persp.up.set(0, 1, 0)
         this.persp.userData.placed = true
@@ -388,7 +464,7 @@ export class Viewer {
         .normalize()
       const radius = Math.hypot(f.length, f.width, f.height) / 2
       const fit = Math.max(1, (f.length * 0.9) / (radius * 2 * (width / height) * 0.55))
-      const dist = (radius / Math.sin(THREE.MathUtils.degToRad(cam.fov / 2))) * 0.92 * fit
+      const dist = (radius / Math.sin(THREE.MathUtils.degToRad(cam.fov / 2))) * 0.8 * fit
       cam.position.copy(origin).addScaledVector(dir, dist)
       cam.lookAt(origin.x, origin.y - f.height * 0.08, origin.z)
     }
