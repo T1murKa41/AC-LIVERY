@@ -4,9 +4,10 @@ import { useStore, type LiveryPanel } from '../state/store'
 import { BasePanel } from './livery/BasePanel'
 import { DesignPanel } from './livery/DesignPanel'
 import { PartsPanel } from './livery/PartsPanel'
+import { TemplatePanel } from './livery/TemplatePanel'
 import { ExportBar, SavePanel } from './livery/SavePanel'
 
-const PANELS: LiveryPanel[] = ['design', 'base', 'parts', 'save']
+const PANELS: LiveryPanel[] = ['design', 'base', 'parts', 'template', 'save']
 
 function isTyping(target: EventTarget | null): boolean {
   const el = target as HTMLElement | null
@@ -80,6 +81,7 @@ export function LiveryTab() {
         {panel === 'design' && <DesignPanel />}
         {panel === 'base' && <BasePanel />}
         {panel === 'parts' && <PartsPanel />}
+        {panel === 'template' && <TemplatePanel />}
         {panel === 'save' && <SavePanel />}
       </div>
       <ExportBar />

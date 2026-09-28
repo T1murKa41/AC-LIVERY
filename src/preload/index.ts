@@ -15,6 +15,10 @@ const api: ElectronApi = {
   saveProject: (bytes, options) => ipcRenderer.invoke('project:save', bytes, options),
   openProject: () => ipcRenderer.invoke('project:open'),
   readAutosave: () => ipcRenderer.invoke('autosave:read'),
+  listTemplates: () => ipcRenderer.invoke('templates:list'),
+  readTemplate: (id) => ipcRenderer.invoke('templates:read', id),
+  saveTemplate: (bytes) => ipcRenderer.invoke('templates:save', bytes),
+  deleteTemplate: (id) => ipcRenderer.invoke('templates:delete', id),
   writeAutosave: (data) => ipcRenderer.invoke('autosave:write', data),
 }
 

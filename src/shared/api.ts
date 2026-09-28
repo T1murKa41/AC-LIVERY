@@ -83,6 +83,15 @@ export interface SkinStatus {
   ours: boolean
 }
 
+/** A template saved by the user (an .aclivery file in the app's data folder). */
+export interface TemplateInfo {
+  id: string
+  name: string
+  savedAt: number
+  /** JPEG thumbnail. */
+  preview?: Uint8Array
+}
+
 export interface ProjectFile {
   /** Where the project lives (an absolute path in the desktop app). */
   path: string
@@ -115,6 +124,11 @@ export interface Backend {
   ): Promise<string | null>
   /** Lets the user pick a project file; null when cancelled. */
   openProject(): Promise<ProjectFile | null>
+  listTemplates(): Promise<TemplateInfo[]>
+  readTemplate(id: string): Promise<Uint8Array>
+  /** Stores a template file under a new id. */
+  saveTemplate(bytes: Uint8Array): Promise<TemplateInfo>
+  deleteTemplate(id: string): Promise<void>
   /** Unsaved work kept across sessions (one slot); null when there is none. */
   readAutosave(): Promise<string | null>
   /** Replaces the autosave; null deletes it. */

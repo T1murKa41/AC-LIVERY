@@ -15,6 +15,7 @@ import {
   writeAutosave,
 } from './projects'
 import type { SettingsStore } from './settings'
+import { TemplateStore } from './templates'
 import { pickDdsEncoder } from './texconv'
 
 function rgbaToBgra(rgba: Uint8Array): Buffer {
@@ -119,6 +120,12 @@ export function registerIpc(settings: SettingsStore): void {
     const path = projects.allow(picked)
     return { path, bytes: await readProjectFile(path) }
   })
+  const templates = new TemplateStore(join(app.getPath('userData'), 'templates'))
+  ipcMain.handle('templates:list', () => templates.list())
+  ipcMain.handle('templates:read', (_e, id: string) => templates.read(id))
+  ipcMain.handle('templates:save', (_e, bytes: Uint8Array) => templates.save(bytes))
+  ipcMain.handle('templates:delete', (_e, id: string) => templates.remove(id))
+
   const autosaveFile = join(app.getPath('userData'), 'autosave.json')
   ipcMain.handle('autosave:read', () => readAutosave(autosaveFile))
   ipcMain.handle('autosave:write', (_e, data: string | null) =>

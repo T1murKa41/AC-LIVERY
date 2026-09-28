@@ -5,6 +5,7 @@ import {
   bytesToDataUrl,
   dataUrlToBytes,
   packProject,
+  peekTemplate,
   projectFileName,
   unpackProject,
 } from './project'
@@ -36,6 +37,24 @@ describe('project files', () => {
     expect(Object.keys(files).sort()).toEqual(['assets/a1.png', 'project.json'])
     expect(files['assets/a1.png']).toEqual(png)
     expect(new TextDecoder().decode(files['project.json'])).not.toContain('base64')
+  })
+
+  it('keeps groups, template details and the thumbnail', () => {
+    const d: Design = { ...design(), groups: { g1: { name: 'logo' } } }
+    const preview = new Uint8Array([0xff, 0xd8, 1, 2])
+    const bytes = packProject({
+      carId: null,
+      draft: { design: d },
+      template: { name: 'Stripes', description: 'two of them' },
+      preview,
+    })
+    const back = unpackProject(bytes)
+    expect(back.draft.design.groups).toEqual({ g1: { name: 'logo' } })
+    expect(back.template).toEqual({ name: 'Stripes', description: 'two of them' })
+    expect(back.preview).toEqual(preview)
+    expect(peekTemplate(bytes)).toEqual({ name: 'Stripes', preview })
+    expect(peekTemplate(packProject({ carId: null, draft: { design: d } }))?.name).toBeNull()
+    expect(peekTemplate(strToU8('junk'))).toBeNull()
   })
 
   it('rejects other files and newer versions', () => {

@@ -21,6 +21,10 @@ export function createElectronBackend(api: ElectronApi): Backend {
     saveProject: (bytes, options) => api.saveProject(bytes, options),
     openProject: () => api.openProject(),
     readAutosave: () => api.readAutosave(),
+    listTemplates: () => api.listTemplates(),
+    readTemplate: (id) => api.readTemplate(id),
+    saveTemplate: (bytes) => api.saveTemplate(bytes),
+    deleteTemplate: (id) => api.deleteTemplate(id),
     writeAutosave: (data) => api.writeAutosave(data),
     async readFile(relPath) {
       const res = await fetch(gameFileUrl(relPath))

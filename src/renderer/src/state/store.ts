@@ -27,6 +27,17 @@ import { fileToDataUrl, fontFamily, imageAspect, textAspect } from '../engine/vi
 import { packProject, projectFileName, unpackProject } from '@shared/design/project'
 import { SKIN_CONFIG_FILE } from '@shared/design/csp'
 import {
+  paramValues,
+  resolveDraft,
+  resolveLayer,
+  STANDARD_PARAMS,
+  type DraftBindings,
+  type DraftBindingTarget,
+  type LayerBindings,
+  type ParamKind,
+  type TemplateParam,
+} from '@shared/design/params'
+import {
   duplicateLayers,
   groupLayers,
   groupMembers,
@@ -53,6 +64,7 @@ import {
   newImageLayer,
   newShapeLayer,
   newTextLayer,
+  pruneAssets,
   type Asset,
   type BaseFinish,
   type CspPaint,
@@ -69,7 +81,8 @@ import {
 import type { ViewMode } from '../engine/viewer'
 import i18n from '../i18n'
 
-export interface LiveryMeta {
+// a type (not an interface) so it fits Record<string, string>
+export type LiveryMeta = {
   skinname: string
   drivername: string
   team: string
@@ -91,6 +104,12 @@ export interface LiveryDraft {
   parts?: PartsPaint
   /** Custom Shaders Patch car paint (missing in older drafts). */
   csp?: CspPaint
+  /** Template parameters, their current values and the draft colours bound to them. */
+  params?: TemplateParam[]
+  values?: Record<string, string>
+  bindings?: DraftBindings
+  /** Name of the template the design came from, if any. */
+  template?: string
   aoSource: AoSource
   aoStrength: number
   skinId: string
@@ -138,6 +157,10 @@ interface Snapshot {
   parts: PartsPaint
   csp: CspPaint
   design: Design
+  params: TemplateParam[]
+  values: Record<string, string>
+  bindings: DraftBindings
+  template: string | undefined
 }
 
 const snapshot = (d: LiveryDraft): Snapshot => ({
@@ -146,9 +169,27 @@ const snapshot = (d: LiveryDraft): Snapshot => ({
   parts: d.parts ?? DEFAULT_PARTS,
   csp: d.csp ?? DEFAULT_CSP,
   design: d.design,
+  params: d.params ?? [],
+  values: d.values ?? {},
+  bindings: d.bindings ?? {},
+  template: d.template,
 })
 
-export type LiveryPanel = 'design' | 'base' | 'parts' | 'save'
+/** A template as it is applied: a draft's design side plus its parameters. */
+export interface TemplateDraft {
+  name: string
+  baseColor: string
+  baseFinish?: BaseFinish
+  parts?: PartsPaint
+  csp?: CspPaint
+  design: Design
+  params: TemplateParam[]
+  values?: Record<string, string>
+  bindings?: DraftBindings
+  meta?: Partial<LiveryMeta>
+}
+
+export type LiveryPanel = 'design' | 'base' | 'parts' | 'template' | 'save'
 
 interface State {
   backend: Backend
@@ -190,6 +231,9 @@ interface State {
   carParts: CarParts | null
   /** Car paint materials a CSP effect applies to (empty: not available). */
   cspMaterials: string[]
+  /** Templates saved by the user, newest first. */
+  userTemplates: UserTemplate[]
+  templateMessage: { kind: 'ok' | 'error'; text: string } | null
   /** Project file the draft was last opened from or saved to. */
   projectPath: string | null
   /** The draft changed since it was last saved, exported or opened. */
@@ -197,6 +241,14 @@ interface State {
   /** Unsaved work found at start-up, offered for restoring. */
   recovery: Recovery | null
   projectError: string | null
+}
+
+export interface UserTemplate {
+  id: string
+  name: string
+  savedAt: number
+  /** blob: URL of the thumbnail. */
+  previewUrl?: string
 }
 
 export interface Recovery {
@@ -262,6 +314,25 @@ interface Actions {
   gizmoUpdate(op: { scale?: number; rotate?: number; snap?: boolean }): void
   endGizmo(): void
   clearDesign(): void
+  // template parameters
+  setParamValue(id: string, value: string): void
+  setParamImage(id: string, file: File): Promise<void>
+  addParam(kind: ParamKind): void
+  addStandardParams(): void
+  updateParam(id: string, patch: Partial<Pick<TemplateParam, 'label' | 'default'>>): void
+  removeParam(id: string): void
+  bindLayer(id: string, prop: keyof LayerBindings, paramId: string | null): void
+  bindDraft(target: DraftBindingTarget, paramId: string | null): void
+  /** Replaces the design with a template; texture choices of the car stay. */
+  applyTemplate(template: TemplateDraft): void
+  /** Shows a template on the car without applying it; null goes back to the draft. */
+  previewTemplate(template: TemplateDraft | null): void
+  loadTemplates(): Promise<void>
+  userTemplate(id: string): Promise<TemplateDraft | null>
+  saveAsTemplate(name: string): Promise<void>
+  deleteTemplate(id: string): Promise<void>
+  importTemplate(): Promise<void>
+  exportTemplate(id: string): Promise<void>
   undo(): void
   redo(): void
   attachEngine(controller: EngineController | null): void
@@ -283,6 +354,17 @@ const vadd = (a: V3, b: V3): V3 => [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
 const vsub = (a: V3, b: V3): V3 => [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
 const vscale = (a: V3, k: number): V3 => [a[0] * k, a[1] * k, a[2] * k]
 const vdot = (a: V3, b: V3): number => a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+
+/** The draft with its template parameters filled in: what gets baked and exported. */
+function resolved(d: LiveryDraft): LiveryDraft {
+  return resolveDraft({ ...d, parts: d.parts ?? DEFAULT_PARTS, csp: d.csp ?? DEFAULT_CSP })
+}
+
+/** Asset ids a draft's parameters point to; they survive removing layers. */
+function paramAssets(d: LiveryDraft): string[] {
+  const imageParams = (d.params ?? []).filter((p) => p.kind === 'image')
+  return imageParams.flatMap((p) => [p.default, d.values?.[p.id] ?? '']).filter(Boolean)
+}
 
 /** Visual properties of any layer kind that can be edited. */
 export type LayerPatch = Partial<
@@ -312,13 +394,17 @@ let bakeQueued = false
 let bakeRunning: Promise<void> | null = null
 /** Draft as last saved, exported or opened; anything else is unsaved work. */
 let cleanDraft: LiveryDraft = DEFAULT_DRAFT
+/** A template shown on the car while the pointer rests on it in the gallery. */
+let previewDraft: LiveryDraft | null = null
+/** User templates already read from disk, by id. */
+const templateCache = new Map<string, TemplateDraft>()
 const AUTOSAVE_DELAY = 1500
 
 export const useStore = create<State & Actions>((set, get) => {
   const bakeOnce = async (): Promise<void> => {
     const { analysis, tab } = get()
     if (!engine || !analysis || tab !== 'livery') return
-    const draft = get().draft
+    const draft = resolved(previewDraft ?? get().draft)
     const needsAo = draft.aoSource !== 'none' && draft.aoStrength > 0
     if (needsAo) set({ aoStatus: 'working' })
     try {
@@ -536,6 +622,8 @@ export const useStore = create<State & Actions>((set, get) => {
     finishMaps: [],
     carParts: null,
     cspMaterials: [],
+    userTemplates: [],
+    templateMessage: null,
     projectPath: null,
     dirty: false,
     recovery: null,
@@ -552,6 +640,7 @@ export const useStore = create<State & Actions>((set, get) => {
             .catch(() => null),
         ),
       })
+      void get().loadTemplates()
       if (settings.acRoot) await get().loadCars()
     },
 
@@ -711,6 +800,8 @@ export const useStore = create<State & Actions>((set, get) => {
       if (patch.baseFinish !== undefined) pushHistory()
       if (patch.parts !== undefined) pushHistory('parts')
       if (patch.csp !== undefined) pushHistory('csp')
+      if (patch.values !== undefined) pushHistory('values')
+      if (patch.params !== undefined || patch.bindings !== undefined) pushHistory('params')
       const prev = get().draft
       const meta = { ...prev.meta, ...patch.meta }
       const next: LiveryDraft = { ...prev, ...patch, meta }
@@ -724,6 +815,9 @@ export const useStore = create<State & Actions>((set, get) => {
         patch.baseFinish !== undefined ||
         patch.parts !== undefined ||
         patch.csp !== undefined ||
+        patch.params !== undefined ||
+        patch.values !== undefined ||
+        patch.bindings !== undefined ||
         patch.aoSource !== undefined ||
         patch.aoStrength !== undefined ||
         patch.liveryTextures !== undefined ||
@@ -766,9 +860,13 @@ export const useStore = create<State & Actions>((set, get) => {
       set({ exportState: { status: 'working' } })
       try {
         // make sure the texture on screen is the one that gets saved
-        if (bakeRunning || !engine.hasLivery) await rebake()
+        if (previewDraft || bakeRunning || !engine.hasLivery) {
+          previewDraft = null
+          await rebake()
+        }
+        const r = resolved(draft)
         const extConfig = await engine.cspConfig(
-          draft.csp ?? DEFAULT_CSP,
+          r.csp ?? DEFAULT_CSP,
           get().paintedTextures(),
           get().baseSkinId(),
         )
@@ -785,10 +883,8 @@ export const useStore = create<State & Actions>((set, get) => {
           'image/jpeg',
         )
         const icon = await engine.liveryIconSize()
-        const liveryPng = await renderLiveryIcon(icon.width, icon.height, draft.baseColor)
-        const meta = Object.fromEntries(
-          Object.entries(draft.meta).filter(([, v]) => v.trim() !== ''),
-        )
+        const liveryPng = await renderLiveryIcon(icon.width, icon.height, r.baseColor)
+        const meta = Object.fromEntries(Object.entries(r.meta).filter(([, v]) => v.trim() !== ''))
         const result = await backend.exportSkin({
           carId: car.id,
           skinId: draft.skinId,
@@ -979,7 +1075,9 @@ export const useStore = create<State & Actions>((set, get) => {
           next = { ...next, name: next.text || '…' }
         }
         try {
-          const aspect = await textAspect(next, get().draft.design.assets)
+          const d = get().draft
+          const shown = resolveLayer(next, paramValues(d.params ?? [], d.values), d.design.assets)
+          const aspect = await textAspect(shown as TextLayer, d.design.assets)
           next = {
             ...next,
             placement: { ...next.placement, height: next.placement.width / aspect },
@@ -1011,7 +1109,7 @@ export const useStore = create<State & Actions>((set, get) => {
       const { selection, draft } = get()
       if (!selection.length) return
       pushHistory()
-      setDesign(removeLayers(draft.design, selection))
+      setDesign(removeLayers(draft.design, selection, paramAssets(draft)))
       setSelection([], null)
     },
 
@@ -1209,6 +1307,262 @@ export const useStore = create<State & Actions>((set, get) => {
 
     endGizmo() {
       gizmo = null
+    },
+
+    setParamValue(id, value) {
+      get().updateDraft({ values: { ...get().draft.values, [id]: value } })
+    },
+
+    async setParamImage(id, file) {
+      try {
+        const data = await fileToDataUrl(file)
+        const asset: Asset = { name: file.name, mime: file.type || 'image/png', data }
+        await imageAspect(asset)
+        const assetId = newId('a')
+        addAsset(assetId, asset)
+        get().setParamValue(id, assetId)
+        set({ designError: null })
+      } catch (err) {
+        set({ designError: err instanceof Error ? err.message : String(err) })
+      }
+    },
+
+    addParam(kind) {
+      const params = get().draft.params ?? []
+      let n = 1
+      while (params.some((p) => p.id === `${kind}${n}`)) n++
+      const param: TemplateParam = {
+        id: `${kind}${n}`,
+        kind,
+        label: i18n.t(`params.kinds.${kind}`) + ` ${n}`,
+        default: kind === 'color' ? '#ffffff' : kind === 'text' ? i18n.t('params.sampleText') : '',
+      }
+      get().updateDraft({ params: [...params, param] })
+    },
+
+    addStandardParams() {
+      const params = get().draft.params ?? []
+      const missing = STANDARD_PARAMS.filter((p) => !params.some((q) => q.id === p.id))
+      get().updateDraft({ params: [...params, ...missing] })
+    },
+
+    updateParam(id, patch) {
+      const params = get().draft.params ?? []
+      get().updateDraft({ params: params.map((p) => (p.id === id ? { ...p, ...patch } : p)) })
+    },
+
+    removeParam(id) {
+      pushHistory()
+      const draft = get().draft
+      const values = { ...draft.values }
+      delete values[id]
+      const bindings = Object.fromEntries(
+        Object.entries(draft.bindings ?? {}).filter(([, p]) => p !== id),
+      ) as DraftBindings
+      const params = (draft.params ?? []).filter((p) => p.id !== id)
+      const next: LiveryDraft = { ...draft, params, values, bindings }
+      const layers = draft.design.layers.map((l) => {
+        if (!l.bindings || !Object.values(l.bindings).includes(id)) return l
+        const b = Object.fromEntries(
+          Object.entries(l.bindings).filter(([, p]) => p !== id),
+        ) as LayerBindings
+        return { ...l, bindings: b }
+      })
+      set({
+        draft: {
+          ...next,
+          design: pruneAssets({ ...draft.design, layers }, paramAssets(next)),
+        },
+        exportState: { status: 'idle' },
+      })
+      void rebake()
+    },
+
+    bindLayer(id, prop, paramId) {
+      pushHistory(`bind:${id}:${prop}`)
+      mapLayer(id, (l) => {
+        const bindings: LayerBindings = { ...l.bindings }
+        if (paramId) bindings[prop] = paramId
+        else delete bindings[prop]
+        return { ...l, bindings }
+      })
+    },
+
+    bindDraft(target, paramId) {
+      const bindings: DraftBindings = { ...get().draft.bindings }
+      if (paramId) bindings[target] = paramId
+      else delete bindings[target]
+      get().updateDraft({ bindings })
+    },
+
+    applyTemplate(t) {
+      previewDraft = null
+      pushHistory()
+      const draft = get().draft
+      // values typed earlier (number, driver...) carry over to the new template
+      const kept = Object.fromEntries(
+        Object.entries(draft.values ?? {}).filter(
+          ([id, v]) => t.params.some((p) => p.id === id && p.kind !== 'image') && v !== '',
+        ),
+      )
+      const next: LiveryDraft = {
+        ...draft,
+        baseColor: t.baseColor,
+        baseFinish: t.baseFinish ?? 'stock',
+        parts: t.parts ?? DEFAULT_PARTS,
+        csp: t.csp ?? DEFAULT_CSP,
+        design: t.design,
+        params: t.params,
+        values: { ...t.values, ...kept },
+        bindings: t.bindings ?? {},
+        template: t.name,
+        meta: { ...draft.meta, ...t.meta },
+      }
+      set({ draft: next, exportState: { status: 'idle' } })
+      setSelection([], null)
+      void rebake()
+    },
+
+    previewTemplate(t) {
+      if (!t) {
+        if (!previewDraft) return
+        previewDraft = null
+        void rebake()
+        return
+      }
+      const draft = get().draft
+      previewDraft = {
+        ...draft,
+        baseColor: t.baseColor,
+        baseFinish: t.baseFinish ?? 'stock',
+        parts: t.parts ?? DEFAULT_PARTS,
+        csp: t.csp ?? DEFAULT_CSP,
+        design: t.design,
+        params: t.params,
+        values: { ...t.values, ...draft.values },
+        bindings: t.bindings ?? {},
+      }
+      void rebake()
+    },
+
+    async loadTemplates() {
+      try {
+        const list = await get().backend.listTemplates()
+        for (const t of get().userTemplates) if (t.previewUrl) URL.revokeObjectURL(t.previewUrl)
+        set({
+          userTemplates: list.map((t) => ({
+            id: t.id,
+            name: t.name,
+            savedAt: t.savedAt,
+            previewUrl: t.preview
+              ? URL.createObjectURL(new Blob([t.preview as BlobPart], { type: 'image/jpeg' }))
+              : undefined,
+          })),
+        })
+      } catch (err) {
+        console.error(err)
+      }
+    },
+
+    async userTemplate(id) {
+      const cached = templateCache.get(id)
+      if (cached) return cached
+      try {
+        const doc = unpackProject(await get().backend.readTemplate(id))
+        const d = normalizeDraft(doc.draft)
+        const t: TemplateDraft = {
+          name: doc.template?.name ?? id,
+          baseColor: d.baseColor,
+          baseFinish: d.baseFinish,
+          parts: d.parts,
+          csp: d.csp,
+          design: d.design,
+          params: d.params ?? [],
+          values: d.values,
+          bindings: d.bindings,
+          // only fields filled from parameters; the skin's own name stays
+          meta: Object.fromEntries(
+            Object.entries(d.meta).filter(([, v]) => /\{[^}]+\}/.test(v)),
+          ) as Partial<LiveryMeta>,
+        }
+        templateCache.set(id, t)
+        return t
+      } catch (err) {
+        console.error(err)
+        set({ templateMessage: { kind: 'error', text: String(err) } })
+        return null
+      }
+    },
+
+    async saveAsTemplate(name) {
+      const { draft, car, backend } = get()
+      const title = name.trim()
+      if (!title) return
+      try {
+        if (previewDraft) {
+          previewDraft = null
+          await rebake()
+        } else await whenBaked()
+        const preview = engine
+          ? await encodeImage(engine.capturePreview(320, 180), 320, 180, 'image/jpeg')
+          : undefined
+        const bytes = packProject({
+          carId: car?.id ?? null,
+          draft: { ...draft, template: title },
+          template: { name: title },
+          preview,
+        })
+        await backend.saveTemplate(bytes)
+        await get().loadTemplates()
+        set({ templateMessage: { kind: 'ok', text: i18n.t('templates.saved', { name: title }) } })
+      } catch (err) {
+        console.error(err)
+        set({ templateMessage: { kind: 'error', text: String(err) } })
+      }
+    },
+
+    async deleteTemplate(id) {
+      await get().backend.deleteTemplate(id)
+      templateCache.delete(id)
+      await get().loadTemplates()
+    },
+
+    async importTemplate() {
+      const { backend } = get()
+      try {
+        const file = await backend.openProject()
+        if (!file) return
+        const doc = unpackProject(file.bytes)
+        // a plain project becomes a template named after its file
+        const bytes = doc.template
+          ? file.bytes
+          : packProject({
+              ...doc,
+              template: {
+                name: file.path
+                  .split(/[\\/]/)
+                  .pop()!
+                  .replace(/\.aclivery$/i, ''),
+              },
+            })
+        await backend.saveTemplate(bytes)
+        await get().loadTemplates()
+      } catch (err) {
+        console.error(err)
+        set({ templateMessage: { kind: 'error', text: String(err) } })
+      }
+    },
+
+    async exportTemplate(id) {
+      const { backend, userTemplates } = get()
+      try {
+        const bytes = await backend.readTemplate(id)
+        const name = userTemplates.find((t) => t.id === id)?.name ?? id
+        await backend.saveProject(bytes, { suggestedName: projectFileName(name) })
+      } catch (err) {
+        console.error(err)
+        set({ templateMessage: { kind: 'error', text: String(err) } })
+      }
     },
 
     clearDesign() {

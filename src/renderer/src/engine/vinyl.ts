@@ -164,9 +164,30 @@ export function rasterKey(layer: Layer, assets: Record<string, Asset>): string {
     case 'shape':
       return `shape|${layer.shape}|${layer.color}|${aspect}`
     case 'text':
-      return `text|${layer.text}|${layer.font}|${layer.bold}|${layer.italic}|${layer.color}|${layer.outline}|${layer.outlineColor}|${assets[fontAssetId(layer.font) ?? '']?.data.length ?? 0}`
+      return `text|${layer.text}|${layer.font}|${layer.bold}|${layer.italic}|${layer.color}|${layer.outline}|${layer.outlineColor}|${assets[fontAssetId(layer.font) ?? '']?.data.length ?? 0}|${aspect}`
     case 'image':
-      return `image|${layer.asset}|${assets[layer.asset]?.data.length ?? 0}`
+      return `image|${layer.asset}|${assets[layer.asset]?.data.length ?? 0}|${aspect}`
+  }
+}
+
+/**
+ * Canvas holding content of size w x h centred in a box with the layer's
+ * aspect ratio. Text and images keep their proportions when the box does
+ * not match them (a template's number slot filled with "7" or "127").
+ */
+function fitInBox(w: number, h: number, aspect: number) {
+  const a = Math.max(0.02, Math.min(50, aspect))
+  let width = w
+  let height = h
+  if (w / h > a) height = w / a
+  else width = h * a
+  const k = Math.min(1, 8192 / Math.max(width, height))
+  return {
+    width: Math.max(1, Math.round(width * k)),
+    height: Math.max(1, Math.round(height * k)),
+    x: ((width - w) / 2) * k,
+    y: ((height - h) / 2) * k,
+    scale: k,
   }
 }
 
@@ -189,16 +210,18 @@ export async function rasterize(
       const family = await fontFamily(layer.font, assets)
       await document.fonts.load(textFont(layer, family), layer.text).catch(() => undefined)
       const size = measureText(layer, family)
-      canvas.width = Math.min(8192, size.width)
-      canvas.height = size.height
+      const box = fitInBox(size.width, size.height, layer.placement.width / layer.placement.height)
+      canvas.width = box.width
+      canvas.height = box.height
+      ctx.setTransform(box.scale, 0, 0, box.scale, box.x, box.y)
       ctx.font = textFont(layer, family)
       ctx.textAlign = 'center'
       ctx.textBaseline = 'alphabetic'
-      const x = canvas.width / 2
+      const x = size.width / 2
       // centre the actual glyph box (not the em box) vertically
       const m = ctx.measureText(layer.text || ' ')
       const baseline =
-        canvas.height / 2 + (m.actualBoundingBoxAscent - m.actualBoundingBoxDescent) / 2
+        size.height / 2 + (m.actualBoundingBoxAscent - m.actualBoundingBoxDescent) / 2
       if (layer.outline > 0) {
         ctx.lineJoin = 'round'
         ctx.lineWidth = layer.outline * TEXT_PX * 2
@@ -219,9 +242,12 @@ export async function rasterize(
       // vector images are drawn at full size to stay sharp
       const svg = asset.mime.includes('svg')
       const scale = svg ? IMAGE_MAX / Math.max(w, h) : k
-      canvas.width = Math.max(1, Math.round(w * scale))
-      canvas.height = Math.max(1, Math.round(h * scale))
-      ctx.drawImage(img, 0, 0, canvas.width, canvas.height)
+      const iw = Math.max(1, Math.round(w * scale))
+      const ih = Math.max(1, Math.round(h * scale))
+      const box = fitInBox(iw, ih, layer.placement.width / layer.placement.height)
+      canvas.width = box.width
+      canvas.height = box.height
+      ctx.drawImage(img, box.x, box.y, iw * box.scale, ih * box.scale)
       break
     }
   }

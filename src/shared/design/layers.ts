@@ -143,9 +143,13 @@ export function duplicateLayers(
   }
 }
 
-export function removeLayers(design: Design, ids: readonly string[]): Design {
+export function removeLayers(
+  design: Design,
+  ids: readonly string[],
+  keepAssets: Iterable<string> = [],
+): Design {
   const chosen = new Set(ids)
   return normalizeGroups(
-    pruneAssets({ ...design, layers: design.layers.filter((l) => !chosen.has(l.id)) }),
+    pruneAssets({ ...design, layers: design.layers.filter((l) => !chosen.has(l.id)) }, keepAssets),
   )
 }

@@ -12,7 +12,7 @@ import {
   type TextLayer,
 } from '@shared/design/types'
 import { useStore, type AlignMode, type SelectMode } from '../../state/store'
-import { ColorField } from './ColorField'
+import { BindSelect, BoundColor, useParams } from './Binding'
 import { ShapeIcon } from './ShapeIcon'
 import { Slider } from './Slider'
 
@@ -28,6 +28,7 @@ export function DesignPanel() {
   const addImage = useStore((s) => s.addImage)
   const error = useStore((s) => s.designError)
   const finishMaps = useStore((s) => s.finishMaps)
+  const bindDraft = useStore((s) => s.bindDraft)
   const imageInput = useRef<HTMLInputElement>(null)
   const baseFinish = draft.baseFinish ?? 'stock'
 
@@ -35,10 +36,12 @@ export function DesignPanel() {
     <>
       <section>
         <h3>{t('livery.base')}</h3>
-        <ColorField
+        <BoundColor
           value={draft.baseColor}
           onChange={(baseColor) => update({ baseColor })}
           label={t('livery.base')}
+          binding={draft.bindings?.baseColor}
+          onBind={(p) => bindDraft('baseColor', p)}
           swatches
         />
         <label className="field">
@@ -392,6 +395,7 @@ function LayerProperties() {
   const layer = useStore((s) => s.draft.design.layers.find((l) => l.id === s.selectedLayer))
   const updateLayer = useStore((s) => s.updateLayer)
   const updatePlacement = useStore((s) => s.updatePlacement)
+  const bindLayer = useStore((s) => s.bindLayer)
   const [keepAspect, setKeepAspect] = useState(true)
   const offPaint = useStore((s) => s.selectedOffPaint)
   if (!layer) return null
@@ -433,15 +437,26 @@ function LayerProperties() {
               </button>
             ))}
           </div>
-          <ColorField
+          <BoundColor
             value={layer.color}
             onChange={(color) => void updateLayer(layer.id, { color })}
             label={t('design.color')}
+            binding={layer.bindings?.color}
+            onBind={(p) => bindLayer(layer.id, 'color', p)}
+            disabled={disabled}
           />
         </>
       )}
 
       {layer.kind === 'text' && <TextProperties layer={layer} disabled={disabled} />}
+      {layer.kind === 'image' && (
+        <BindSelect
+          kind="image"
+          value={layer.bindings?.asset}
+          onChange={(p) => bindLayer(layer.id, 'asset', p)}
+          disabled={disabled}
+        />
+      )}
 
       <label className="field">
         <span>{t('design.finish')}</span>
@@ -543,6 +558,8 @@ function TextProperties({ layer, disabled }: { layer: TextLayer; disabled: boole
   )
   const set = (patch: Partial<TextLayer>) => void updateLayer(layer.id, patch as Partial<Layer>)
   const currentImported = fontAssetId(layer.font)
+  const bindLayer = useStore((s) => s.bindLayer)
+  const textParams = useParams('text')
 
   return (
     <>
@@ -554,6 +571,21 @@ function TextProperties({ layer, disabled }: { layer: TextLayer; disabled: boole
           onChange={(e) => set({ text: e.target.value })}
         />
       </label>
+      {textParams.length > 0 && (
+        <div className="row gap wrap placeholders" aria-label={t('params.insert')}>
+          {textParams.map((p) => (
+            <button
+              key={p.id}
+              className="chip"
+              disabled={disabled}
+              title={p.label}
+              onClick={() => set({ text: `${layer.text}{${p.id}}` })}
+            >
+              {`{${p.id}}`}
+            </button>
+          ))}
+        </div>
+      )}
       <label className="field">
         <span>{t('design.font')}</span>
         <select
@@ -613,10 +645,13 @@ function TextProperties({ layer, disabled }: { layer: TextLayer; disabled: boole
           {t('design.italic')}
         </label>
       </div>
-      <ColorField
+      <BoundColor
         value={layer.color}
         onChange={(color) => set({ color })}
         label={t('design.color')}
+        binding={layer.bindings?.color}
+        onBind={(p) => bindLayer(layer.id, 'color', p)}
+        disabled={disabled}
       />
       <Slider
         label={t('design.outline')}
@@ -629,10 +664,13 @@ function TextProperties({ layer, disabled }: { layer: TextLayer; disabled: boole
         onChange={(v) => set({ outline: v })}
       />
       {layer.outline > 0 && (
-        <ColorField
+        <BoundColor
           value={layer.outlineColor}
           onChange={(outlineColor) => set({ outlineColor })}
           label={t('design.outlineColor')}
+          binding={layer.bindings?.outlineColor}
+          onBind={(p) => bindLayer(layer.id, 'outlineColor', p)}
+          disabled={disabled}
         />
       )}
     </>

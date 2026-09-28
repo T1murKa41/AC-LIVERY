@@ -8,7 +8,7 @@ import {
   type CspEffect,
 } from '@shared/design/types'
 import { useStore } from '../../state/store'
-import { ColorField } from './ColorField'
+import { BoundColor } from './Binding'
 import { Slider } from './Slider'
 
 const percent = (v: number) => `${Math.round(v * 100)}%`
@@ -22,6 +22,8 @@ export function PartsPanel() {
   const cspMaterials = useStore((s) => s.cspMaterials)
   const updatePart = useStore((s) => s.updatePart)
   const updateCsp = useStore((s) => s.updateCsp)
+  const bindings = useStore((s) => s.draft.bindings)
+  const bindDraft = useStore((s) => s.bindDraft)
   const { rims, calipers, glass } = parts
   const interiorGlass = found?.glass.some((g) => !g.exterior) ?? false
 
@@ -74,15 +76,19 @@ export function PartsPanel() {
         )}
         {csp.effect === 'chameleon' && (
           <>
-            <ColorField
+            <BoundColor
               value={csp.colorA}
               onChange={(colorA) => updateCsp({ colorA })}
               label={t('parts.colorA')}
+              binding={bindings?.cspColorA}
+              onBind={(p) => bindDraft('cspColorA', p)}
             />
-            <ColorField
+            <BoundColor
               value={csp.colorB}
               onChange={(colorB) => updateCsp({ colorB })}
               label={t('parts.colorB')}
+              binding={bindings?.cspColorB}
+              onBind={(p) => bindDraft('cspColorB', p)}
             />
           </>
         )}
@@ -106,10 +112,12 @@ export function PartsPanel() {
         </label>
         {rims.enabled && (
           <>
-            <ColorField
+            <BoundColor
               value={rims.color}
               onChange={(color) => updatePart('rims', { color })}
               label={t('parts.rims')}
+              binding={bindings?.rims}
+              onBind={(p) => bindDraft('rims', p)}
               swatches
             />
             <label className="check">
@@ -153,10 +161,12 @@ export function PartsPanel() {
         </label>
         {calipers.enabled && (
           <>
-            <ColorField
+            <BoundColor
               value={calipers.color}
               onChange={(color) => updatePart('calipers', { color })}
               label={t('parts.calipers')}
+              binding={bindings?.calipers}
+              onBind={(p) => bindDraft('calipers', p)}
               swatches
             />
             <label className="check">
@@ -185,10 +195,12 @@ export function PartsPanel() {
         </label>
         {glass.enabled && (
           <>
-            <ColorField
+            <BoundColor
               value={glass.color}
               onChange={(color) => updatePart('glass', { color })}
               label={t('parts.glass')}
+              binding={bindings?.glass}
+              onBind={(p) => bindDraft('glass', p)}
             />
             <Slider
               label={t('parts.darkness')}

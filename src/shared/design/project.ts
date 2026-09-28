@@ -7,13 +7,23 @@ import type { Asset, Design } from './types'
 export const PROJECT_EXTENSION = 'aclivery'
 export const PROJECT_VERSION = 1
 const PROJECT_JSON = 'project.json'
+const PREVIEW_FILE = 'preview.jpg'
 const ASSET_DIR = 'assets/'
 const FILE_REF = 'file:'
+
+/** Set when the project is a template (a design meant to be reused). */
+export interface TemplateMeta {
+  name: string
+  description?: string
+}
 
 /** What a project stores: the car it was made on and the editor draft. */
 export interface ProjectDoc<D extends { design: Design }> {
   carId: string | null
   draft: D
+  template?: TemplateMeta
+  /** JPEG thumbnail, used for templates in the gallery. */
+  preview?: Uint8Array
 }
 
 interface StoredProject {
@@ -22,6 +32,7 @@ interface StoredProject {
   version: number
   carId: string | null
   draft: unknown
+  template?: TemplateMeta
 }
 
 /** Decodes a data: URL without fetch(), which the app's CSP blocks for data: URLs. */
@@ -69,8 +80,10 @@ export function packProject<D extends { design: Design }>(doc: ProjectDoc<D>): U
     version: PROJECT_VERSION,
     carId: doc.carId,
     draft: { ...doc.draft, design: { ...doc.draft.design, assets } },
+    ...(doc.template ? { template: doc.template } : {}),
   }
   files[PROJECT_JSON] = strToU8(JSON.stringify(stored, null, 2))
+  if (doc.preview) files[PREVIEW_FILE] = [doc.preview, { level: 0 }]
   return zipSync(files, { level: 6 })
 }
 
@@ -116,12 +129,53 @@ export function unpackProject(
     if (!data) continue
     assets[id] = { ...asset, data: bytesToDataUrl(data, asset.mime) }
   }
+  const template =
+    stored.template && typeof stored.template.name === 'string'
+      ? {
+          name: stored.template.name,
+          description:
+            typeof stored.template.description === 'string'
+              ? stored.template.description
+              : undefined,
+        }
+      : undefined
   return {
     carId: typeof stored.carId === 'string' ? stored.carId : null,
     draft: {
       ...draft,
-      design: { layers: Array.isArray(design.layers) ? design.layers : [], assets },
+      design: {
+        layers: Array.isArray(design.layers) ? design.layers : [],
+        assets,
+        ...(design.groups && typeof design.groups === 'object' ? { groups: design.groups } : {}),
+      },
     },
+    template,
+    preview: files[PREVIEW_FILE],
+  }
+}
+
+/**
+ * Name and thumbnail of a template file without decoding its assets (for
+ * listing many templates); null if the bytes are not a project.
+ */
+export function peekTemplate(
+  bytes: Uint8Array,
+): { name: string | null; preview?: Uint8Array } | null {
+  let files: Record<string, Uint8Array>
+  try {
+    files = unzipSync(bytes, { filter: (f) => f.name === PROJECT_JSON || f.name === PREVIEW_FILE })
+  } catch {
+    return null
+  }
+  const json = files[PROJECT_JSON]
+  if (!json) return null
+  try {
+    const stored = JSON.parse(strFromU8(json)) as Partial<StoredProject>
+    if (stored.kind !== 'project') return null
+    const name = typeof stored.template?.name === 'string' ? stored.template.name : null
+    return { name, preview: files[PREVIEW_FILE] }
+  } catch {
+    return null
   }
 }
 

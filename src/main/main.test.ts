@@ -17,6 +17,8 @@ import {
   writeAutosave,
 } from './projects'
 import { builtinDdsEncoder } from './texconv'
+import { TemplateStore } from './templates'
+import { packProject } from '@shared/design/project'
 
 let root: string
 
@@ -266,5 +268,36 @@ describe('projects', () => {
     expect(await readAutosave(autosave)).toBe('{"a":1}')
     await writeAutosave(autosave, null)
     expect(await readAutosave(autosave)).toBeNull()
+  })
+})
+
+describe('template store', () => {
+  let dir: string
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'aclivery-templates-'))
+  })
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true })
+  })
+
+  it('saves, lists, reads and deletes templates', async () => {
+    const store = new TemplateStore(join(dir, 'templates'))
+    expect(await store.list()).toEqual([])
+    const bytes = packProject({
+      carId: null,
+      draft: { design: { layers: [], assets: {} } },
+      template: { name: 'Stripes' },
+      preview: new Uint8Array([0xff, 0xd8]),
+    })
+    const saved = await store.save(bytes)
+    expect(saved.name).toBe('Stripes')
+    const list = await store.list()
+    expect(list.map((t) => [t.id, t.name])).toEqual([[saved.id, 'Stripes']])
+    expect([...list[0]!.preview!]).toEqual([0xff, 0xd8])
+    expect(await store.read(saved.id)).toEqual(bytes)
+    await expect(store.save(new Uint8Array([1, 2, 3]))).rejects.toThrow()
+    await expect(store.read('../settings')).rejects.toThrow(/Invalid template id/)
+    await store.remove(saved.id)
+    expect(await store.list()).toEqual([])
   })
 })

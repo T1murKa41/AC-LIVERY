@@ -5,7 +5,8 @@ const PANEL_NAMES = {
   design: /Дизайн|Design/,
   base: /Основа|Base/,
   parts: /Детали|Parts/,
-  save: /Сохранение|Save/,
+  template: /Шаблон|Template/,
+  save: /В игру|Save/,
 }
 
 /** Switches the sub-panel of the Livery tab. */
@@ -532,4 +533,68 @@ test('rims, calipers, glass and the CSP paint are written into the skin', async 
   const [cr, cg, cb] = result.caliper!
   expect(cr!).toBeGreaterThan(cg! + 80)
   expect(cr!).toBeGreaterThan(cb! + 80)
+})
+
+test('templates: preview, apply with parameters, save and reuse', async ({ page }) => {
+  await openCar(page)
+  await page.locator('.tabs button').nth(1).click()
+  await panel(page, 'template')
+  const cards = page.locator('.template-card')
+  await expect(cards).toHaveCount(5)
+
+  // pointing at a card previews it without touching the design
+  await cards.nth(0).hover()
+  await page.waitForTimeout(500)
+  await expect(page.locator('.params h3')).toHaveText(/^(Параметры шаблона|Template parameters)$/)
+
+  // apply "Endurance", then fill in the number, driver and colours
+  await cards
+    .nth(2)
+    .getByRole('button', { name: /Применить|Apply/ })
+    .click()
+  await expect(page.locator('.params h3')).toContainText(/Эндуранс|Endurance/)
+  await page.getByRole('textbox', { name: /^(Номер|Number)/ }).fill('144')
+  await page.getByRole('textbox', { name: /^(Пилот|Driver)/ }).fill('Ivan Petrov')
+  const primary = page
+    .locator('.param-row')
+    .filter({ hasText: /Основной цвет|Primary colour/ })
+    .locator('input[type=text], input:not([type])')
+  await primary.fill('#1c5fd4')
+
+  await panel(page, 'save')
+  await page.getByLabel(/^(Название|Name)$/).fill('Template Test')
+  await page.locator('.btn.primary.wide').click()
+  await expect(page.locator('.notice.ok')).toBeVisible({ timeout: 60_000 })
+  const dir = 'content/cars/aclivery_test_coupe/skins/template_test/'
+  const ui = await page.evaluate((path) => {
+    const all = (globalThis as unknown as { __aclMockFiles: Map<string, Uint8Array> })
+      .__aclMockFiles
+    return JSON.parse(new TextDecoder().decode(all.get(path))) as Record<string, string>
+  }, dir + 'ui_skin.json')
+  // ui_skin.json gets the parameter values
+  expect(ui.drivername).toBe('Ivan Petrov')
+  expect(ui.number).toBe('144')
+  // the base follows the primary colour
+  expect(await previewShare(page, dir, 'blue')).toBeGreaterThan(0.05)
+
+  // save the design as a template of our own and apply it again later
+  await panel(page, 'template')
+  await page.getByRole('textbox', { name: /Название шаблона|Template name/ }).fill('My League')
+  await page.getByRole('button', { name: /Сохранить как шаблон|Save as template/ }).click()
+  await expect(cards).toHaveCount(6)
+  await expect(cards.nth(5)).toContainText('My League')
+  await expect(cards.nth(5).locator('img')).toHaveCount(1)
+
+  await cards
+    .nth(4)
+    .getByRole('button', { name: /Применить|Apply/ })
+    .click() // minimal
+  await expect(page.locator('.params h3')).toContainText(/Минимализм|Minimal/)
+  await cards
+    .nth(5)
+    .getByRole('button', { name: /Применить|Apply/ })
+    .click()
+  await expect(page.locator('.params h3')).toContainText('My League')
+  // values typed before survive switching templates
+  await expect(page.getByRole('textbox', { name: /^(Номер|Number)/ })).toHaveValue('144')
 })

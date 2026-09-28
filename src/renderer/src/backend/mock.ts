@@ -11,6 +11,7 @@ import {
   type SkinInfo,
 } from '@shared/api'
 import { buildSyntheticCar, type SyntheticCarOptions } from '@shared/fixtures/syntheticCar'
+import { peekTemplate } from '@shared/design/project'
 import { hasTransparency, writeDds } from '@shared/formats/dds'
 import { asRecord, asString, parseLenientJson } from '@shared/formats/json'
 import { parseUiSkin, serializeUiSkin } from '@shared/formats/uiSkin'
@@ -48,6 +49,8 @@ export function createMockBackend(): Backend {
 
   let settings: AppSettings = { acRoot: 'mock://assettocorsa', language: 'ru' }
   let lastProject: string | null = null
+  const templates = new Map<string, { bytes: Uint8Array; savedAt: number }>()
+  let templateCounter = 0
 
   const children = (prefix: string) => {
     const dirs = new Set<string>()
@@ -181,6 +184,30 @@ export function createMockBackend(): Backend {
     async openProject() {
       const bytes = lastProject ? files.get(lastProject) : undefined
       return lastProject && bytes ? { path: lastProject, bytes } : null
+    },
+    async listTemplates() {
+      return [...templates.entries()]
+        .map(([id, t]) => {
+          const peek = peekTemplate(t.bytes)
+          return { id, name: peek?.name ?? id, savedAt: t.savedAt, preview: peek?.preview }
+        })
+        .sort((a, b) => b.savedAt - a.savedAt)
+    },
+    async readTemplate(id) {
+      const t = templates.get(id)
+      if (!t) throw new Error(`No template ${id}`)
+      return t.bytes
+    },
+    async saveTemplate(bytes) {
+      const peek = peekTemplate(bytes)
+      if (!peek) throw new Error('Not an AC Livery project')
+      const id = `t${++templateCounter}`
+      const savedAt = Date.now()
+      templates.set(id, { bytes, savedAt })
+      return { id, name: peek.name ?? id, savedAt, preview: peek.preview }
+    },
+    async deleteTemplate(id) {
+      templates.delete(id)
     },
     async readAutosave() {
       try {

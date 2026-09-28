@@ -3,6 +3,8 @@
 // Placements are stored relative to the car body (see placement.ts), so the
 // same design can be applied to another car.
 
+import type { LayerBindings } from './params'
+
 export type V3 = [number, number, number]
 
 export type ShapeKind =
@@ -72,6 +74,8 @@ interface LayerBase {
   finish?: LayerFinish
   /** Group id; members of a group are always next to each other in the stack. */
   group?: string
+  /** Template parameters some properties follow (see params.ts). */
+  bindings?: LayerBindings
   placement: Placement
 }
 
@@ -288,9 +292,12 @@ export function fontAssetId(font: string): string | null {
   return font.startsWith(FONT_ASSET_PREFIX) ? font.slice(FONT_ASSET_PREFIX.length) : null
 }
 
-/** Assets referenced by layers (images and imported fonts); everything else is dropped. */
-export function pruneAssets(design: Design): Design {
-  const used = new Set<string>()
+/**
+ * Assets referenced by layers (images and imported fonts) or listed in
+ * `keep` (template parameter values); everything else is dropped.
+ */
+export function pruneAssets(design: Design, keep: Iterable<string> = []): Design {
+  const used = new Set<string>(keep)
   for (const l of design.layers) {
     if (l.kind === 'image') used.add(l.asset)
     if (l.kind === 'text') {
