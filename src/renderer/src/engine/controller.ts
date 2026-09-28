@@ -16,10 +16,22 @@ import { Viewer, type ViewMode } from './viewer'
 /** 'auto' | 'none' | 'model' | 'skin:<id>' */
 export type AoSource = string
 
-export interface BakeParams {
+export interface LiveryParams {
   baseColor: string
   aoSource: AoSource
   aoStrength: number
+  /** Texture names to repaint. */
+  textures: string[]
+  /** Stock skin providing every other texture; null = the model's own textures. */
+  baseSkin: string | null
+}
+
+export interface LiveryCandidate {
+  name: string
+  /** Share of visible car pixels covered by this texture (0..1). */
+  visible: number
+  /** Surface area of the meshes using it, m². */
+  area: number
 }
 
 export interface SkinTextureStatus {
@@ -57,7 +69,10 @@ export class EngineController {
   private readonly skinTextures = new Map<string, Map<string, TextureInfo>>()
   private readonly aoCache = new Map<string, THREE.DataTexture | null>()
   private liveryActive = false
-  private autoAoPick: AoSource | null = null
+  private readonly autoAoPick = new Map<string, AoSource>()
+  private candidates: LiveryCandidate[] | null = null
+  private painted: string[] = []
+  private baseSkin: string | null = null
   private lastSkinStatus: SkinTextureStatus[] = []
   private generation = 0
 
@@ -94,6 +109,12 @@ export class EngineController {
   /** Updates the skin list after an export without reloading the model. */
   updateCarDetails(car: CarDetails): void {
     this.car = car
+    // skins written by AC Livery may have just changed on disk
+    for (const skin of car.skins) {
+      if (!skin.ours) continue
+      for (const t of this.skinTextures.get(skin.id)?.values() ?? []) t.texture.dispose()
+      this.skinTextures.delete(skin.id)
+    }
   }
 
   get hasLivery(): boolean {
@@ -106,7 +127,10 @@ export class EngineController {
     this.skinTextures.clear()
     for (const t of this.aoCache.values()) t?.dispose()
     this.aoCache.clear()
-    this.autoAoPick = null
+    this.autoAoPick.clear()
+    this.candidates = null
+    this.painted = []
+    this.baseSkin = null
     this.lastSkinStatus = []
     this.liveryActive = false
     this.analysis = null
@@ -178,15 +202,42 @@ export class EngineController {
   // -------------------------------------------------------------------------
   // Livery
 
-  private bakeMeshes(): BakeMesh[] {
-    const body = this.analysis?.bodyTexture?.toLowerCase()
+  /**
+   * Paintable textures ranked by how much of the visible car they cover.
+   * Measured once per car, with the stock skin that was shown first.
+   */
+  detectLiveryCandidates(): LiveryCandidate[] {
+    if (this.candidates) return this.candidates
+    const analysis = this.analysis
+    if (!analysis) return []
+    const shares = this.viewer.measureVisibleTextures()
+    const paintable = new Set(analysis.paintable.map((n) => n.toLowerCase()))
+    const pool = paintable.size
+      ? analysis.diffuseUsage.filter((u) => paintable.has(u.name.toLowerCase()))
+      : analysis.diffuseUsage
+    this.candidates = pool
+      .map((u) => ({ name: u.name, visible: shares.get(u.name.toLowerCase()) ?? 0, area: u.area }))
+      .sort((a, b) => b.visible - a.visible || b.area - a.area)
+      .slice(0, 16)
+    return this.candidates
+  }
+
+  /** Default selection: the texture covering most of the visible car. */
+  autoLiveryTextures(): string[] {
+    const top = this.detectLiveryCandidates()[0]
+    if (top && top.visible > 0) return [top.name]
+    return this.analysis?.bodyTexture ? [this.analysis.bodyTexture] : []
+  }
+
+  private bakeMeshes(texture: string): BakeMesh[] {
+    const key = texture.toLowerCase()
     const car = this.viewer.loadedCar
-    if (!body || !car) return []
+    if (!car) return []
     return this.viewer.carMeshes
       .filter(({ source }) => {
         const mat = car.materials[source.materialId]
         const diffuse = mat?.textures.find((t) => t.name === 'txDiffuse')?.texture
-        return diffuse?.toLowerCase() === body
+        return diffuse?.toLowerCase() === key
       })
       .map(({ mesh, source }) => ({
         geometry: mesh.geometry,
@@ -194,21 +245,18 @@ export class EngineController {
       }))
   }
 
-  /** Candidate AO sources: the model texture plus every skin that overrides the body texture. */
-  aoCandidates(): AoSource[] {
-    const body = this.analysis?.bodyTexture
-    if (!body || !this.car) return []
+  /** Candidate AO sources for a texture: the model plus every stock skin that has it. */
+  private aoCandidates(texture: string): AoSource[] {
+    if (!this.car) return []
     const skins = this.car.skins
-      .filter((s) => !s.ours && findFile(s.files, body))
+      .filter((s) => !s.ours && findFile(s.files, texture))
       .map((s) => `skin:${s.id}`)
     return ['model', ...skins]
   }
 
-  private async sourceTexture(source: AoSource): Promise<TextureInfo | null> {
-    const body = this.analysis?.bodyTexture
-    if (!body) return null
-    if (source === 'model') return this.viewer.modelTexture(body) ?? null
-    if (source.startsWith('skin:')) return this.skinTexture(source.slice(5), body)
+  private async sourceTexture(source: AoSource, texture: string): Promise<TextureInfo | null> {
+    if (source === 'model') return this.viewer.modelTexture(texture) ?? null
+    if (source.startsWith('skin:')) return this.skinTexture(source.slice(5), texture)
     return null
   }
 
@@ -217,17 +265,20 @@ export class EngineController {
    * CPU from a small mip level, so dozens of stock skins can be compared
    * without uploading their full textures to the GPU.
    */
-  private async candidatePreview(source: AoSource, size: number): Promise<Uint8Array | null> {
-    const body = this.analysis?.bodyTexture
-    if (!body || !this.car) return null
+  private async candidatePreview(
+    source: AoSource,
+    texture: string,
+    size: number,
+  ): Promise<Uint8Array | null> {
+    if (!this.car) return null
     let bytes: Uint8Array | null = null
     if (source === 'model') {
       bytes =
-        this.viewer.loadedCar?.textures.find((t) => t.name.toLowerCase() === body.toLowerCase())
+        this.viewer.loadedCar?.textures.find((t) => t.name.toLowerCase() === texture.toLowerCase())
           ?.data ?? null
     } else if (source.startsWith('skin:')) {
       const skin = this.car.skins.find((s) => s.id === source.slice(5))
-      const file = skin && findFile(skin.files, body)
+      const file = skin && findFile(skin.files, texture)
       if (skin && file) {
         bytes = new Uint8Array(
           await this.backend.readFile(`${skinDir(this.car.id, skin.id)}/${file}`),
@@ -243,18 +294,20 @@ export class EngineController {
       }
     }
     // PNG/JPG or formats only the GPU can decode
-    const info = await this.sourceTexture(source).catch(() => null)
+    const info = await this.sourceTexture(source, texture).catch(() => null)
     return info ? readTexture(this.viewer.renderer, info.texture, size, size) : null
   }
 
-  private async pickCleanest(): Promise<AoSource> {
-    if (this.autoAoPick) return this.autoAoPick
+  private async pickCleanest(texture: string): Promise<AoSource> {
+    const key = texture.toLowerCase()
+    const cached = this.autoAoPick.get(key)
+    if (cached) return cached
     const size = 64
-    const mask = uvCoverage(this.viewer.renderer, this.bakeMeshes(), size, size)
+    const mask = uvCoverage(this.viewer.renderer, this.bakeMeshes(texture), size, size)
     let best: AoSource = 'model'
     let bestScore = -Infinity
-    for (const candidate of this.aoCandidates()) {
-      const rgba = await this.candidatePreview(candidate, size).catch(() => null)
+    for (const candidate of this.aoCandidates(texture)) {
+      const rgba = await this.candidatePreview(candidate, texture, size).catch(() => null)
       if (!rgba) continue
       const score = aoSourceScore(rgba, mask)
       if (score > bestScore) {
@@ -262,17 +315,20 @@ export class EngineController {
         best = candidate
       }
     }
-    this.autoAoPick = best
+    this.autoAoPick.set(key, best)
     return best
   }
 
-  async resolveAo(source: AoSource): Promise<AoResolution> {
-    if (source === 'none' || !this.analysis?.bodyTexture) return { used: 'none', texture: null }
-    const used = source === 'auto' ? await this.pickCleanest() : source
-    if (this.aoCache.has(used)) return { used, texture: this.aoCache.get(used) ?? null }
-    const info = await this.sourceTexture(used)
+  private async resolveAo(texture: string, source: AoSource): Promise<AoResolution> {
+    if (source === 'none') return { used: 'none', texture: null }
+    let used = source === 'auto' ? await this.pickCleanest(texture) : source
+    // a skin picked by hand may not have this particular texture
+    if (used.startsWith('skin:') && !(await this.sourceTexture(used, texture))) used = 'model'
+    const cacheKey = `${texture.toLowerCase()}|${used}`
+    if (this.aoCache.has(cacheKey)) return { used, texture: this.aoCache.get(cacheKey) ?? null }
+    const info = await this.sourceTexture(used, texture)
     if (!info) return { used: 'none', texture: null }
-    const { width, height } = this.liveryTextureSize(info)
+    const { width, height } = this.liveryTextureSize(texture, info)
     const rgba = readTexture(this.viewer.renderer, info.texture, width, height)
     const detail = await extractAoInWorker(rgba, width, height)
     const tex = new THREE.DataTexture(
@@ -288,42 +344,90 @@ export class EngineController {
     tex.minFilter = THREE.LinearFilter
     tex.magFilter = THREE.LinearFilter
     tex.needsUpdate = true
-    this.aoCache.set(used, tex)
+    this.aoCache.set(cacheKey, tex)
     return { used, texture: tex }
   }
 
   /** Output resolution: the stock texture size, capped at 8K. */
-  private liveryTextureSize(info?: TextureInfo | null): { width: number; height: number } {
-    const body = this.analysis?.bodyTexture
-    const model = body ? this.viewer.modelTexture(body) : undefined
-    const src = info ?? model
+  private liveryTextureSize(
+    texture: string,
+    info?: TextureInfo | null,
+  ): { width: number; height: number } {
+    const src = info ?? this.viewer.modelTexture(texture)
     const width = Math.min(8192, Math.max(64, src?.width ?? 2048))
     const height = Math.min(8192, Math.max(64, src?.height ?? 2048))
     return { width, height }
   }
 
-  async bakeLivery(params: BakeParams, ao: AoResolution): Promise<void> {
-    const body = this.analysis?.bodyTexture
-    if (!body) return
-    const aoInfo = ao.used === 'none' ? null : await this.sourceTexture(ao.used)
-    const size = this.liveryTextureSize(aoInfo)
-    const texture = this.baker.bake(this.bakeMeshes(), {
-      ...size,
-      baseColor: hexToRgb(params.baseColor),
-      ao: ao.texture,
-      aoStrength: params.aoStrength,
-      alphaSource: this.viewer.modelTexture(body)?.texture ?? null,
-    })
-    this.liveryActive = true
+  /**
+   * Repaints the given textures and shows the result. Every other paintable
+   * texture comes from `baseSkin` (or the model when null), exactly as it
+   * will be exported.
+   */
+  async bakeLivery(params: LiveryParams): Promise<{ aoUsed: AoSource }> {
+    const analysis = this.analysis
+    if (!analysis) return { aoUsed: 'none' }
+    const textures = params.textures.filter((t) => this.viewer.modelTexture(t))
+    const baked = new Map<string, THREE.Texture>()
+    let aoUsed: AoSource = 'none'
+    for (const [i, name] of textures.entries()) {
+      const ao =
+        params.aoStrength > 0
+          ? await this.resolveAo(name, params.aoSource)
+          : { used: 'none', texture: null }
+      if (i === 0) aoUsed = ao.used
+      const baseInfo = params.baseSkin
+        ? await this.skinTexture(params.baseSkin, name).catch(() => null)
+        : null
+      const alphaInfo = baseInfo ?? this.viewer.modelTexture(name) ?? null
+      const aoInfo = ao.used === 'none' ? null : await this.sourceTexture(ao.used, name)
+      const texture = this.baker.bake(name.toLowerCase(), this.bakeMeshes(name), {
+        ...this.liveryTextureSize(name, aoInfo ?? alphaInfo),
+        baseColor: hexToRgb(params.baseColor),
+        ao: ao.texture,
+        aoStrength: params.aoStrength,
+        alphaSource: alphaInfo?.texture ?? null,
+      })
+      baked.set(name.toLowerCase(), texture)
+    }
+    this.baker.keepOnly(baked.keys())
+
+    // load the base skin before touching the view to avoid flicker
+    const base = new Map<string, THREE.Texture>()
+    if (params.baseSkin) {
+      for (const name of analysis.paintable) {
+        if (baked.has(name.toLowerCase())) continue
+        const info = await this.skinTexture(params.baseSkin, name).catch(() => null)
+        if (info) base.set(name, info.texture)
+      }
+    }
     this.viewer.clearOverrides()
-    this.viewer.setOverride(body, texture)
+    for (const [name, texture] of base) this.viewer.setOverride(name, texture)
+    for (const name of textures) this.viewer.setOverride(name, baked.get(name.toLowerCase())!)
+    this.painted = textures
+    this.baseSkin = params.baseSkin
+    this.liveryActive = textures.length > 0
+    return { aoUsed }
   }
 
-  exportTextures(): ExportTexture[] {
-    const body = this.analysis?.bodyTexture
-    if (!body || !this.liveryActive) return []
-    const { width, height, rgba } = this.baker.readPixels()
-    return [{ name: body, width, height, rgba }]
+  /** Baked textures plus the untouched textures of the base skin to copy along. */
+  exportPayload(): {
+    textures: ExportTexture[]
+    copyFiles?: { fromSkin: string; files: string[] }
+  } {
+    if (!this.liveryActive || !this.analysis) return { textures: [] }
+    const textures = this.painted.map((name) => ({
+      name,
+      ...this.baker.readPixels(name.toLowerCase()),
+    }))
+    const skin = this.baseSkin ? this.car?.skins.find((s) => s.id === this.baseSkin) : undefined
+    if (!skin) return { textures }
+    const painted = new Set(this.painted.map((n) => n.toLowerCase()))
+    const files = this.analysis.paintable
+      .filter((n) => !painted.has(n.toLowerCase()))
+      .map((n) => findFile(skin.files, n))
+      .filter((f): f is string => !!f)
+    return { textures, copyFiles: files.length ? { fromSkin: skin.id, files } : undefined }
   }
 
   /** Preview size matching the stock preview.jpg of the car, if any. */
@@ -374,16 +478,17 @@ export class EngineController {
     this.viewer.setShowHidden(show)
   }
 
-  highlightLivery(on: boolean): void {
-    const body = this.analysis?.bodyTexture?.toLowerCase()
+  /** Tints every material that samples one of the given textures. */
+  highlightTextures(names: string[] | null): void {
     const car = this.viewer.loadedCar
-    if (!on || !body || !car) {
+    const keys = new Set((names ?? []).map((n) => n.toLowerCase()))
+    if (!car || keys.size === 0) {
       this.viewer.highlightMaterials(null)
       return
     }
     const ids = new Set<number>()
     car.materials.forEach((m, i) => {
-      if (m.textures.some((t) => t.name === 'txDiffuse' && t.texture.toLowerCase() === body))
+      if (m.textures.some((t) => t.name === 'txDiffuse' && keys.has(t.texture.toLowerCase())))
         ids.add(i)
     })
     this.viewer.highlightMaterials(ids)

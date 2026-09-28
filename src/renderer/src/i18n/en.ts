@@ -46,6 +46,15 @@ export const en: Shape<typeof ru> = {
     none: 'This car has no skins',
   },
   livery: {
+    target: 'What to repaint',
+    targetHint:
+      'Textures that carry the body paint. The percentage is the share of the visible car surface.',
+    auto: 'auto',
+    resetAuto: 'Back to automatic',
+    showOnCar: 'Highlight on the car',
+    baseSkin: 'Other textures (decals, numbers)',
+    baseSkinAuto: 'As on the Skins tab: {{skin}}',
+    baseSkinHint: 'Taken from this skin and copied into the new skin unchanged.',
     base: 'Base colour',
     ao: 'Shading from stock skin',
     aoSource: 'Source',

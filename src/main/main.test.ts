@@ -157,6 +157,22 @@ describe('exportSkin', () => {
     expect(skins.sort()).toEqual(['00_white', '01_red_stripe'])
   })
 
+  it('copies untouched files from another skin', async () => {
+    const result = await exportSkin(
+      root,
+      request({ copyFiles: { fromSkin: '01_red_stripe', files: ['ui_skin.json', 'Skin_00.dds'] } }),
+      encoders,
+      '0',
+    )
+    expect(result.ok).toBe(true)
+    const dir = join(root, 'content', 'cars', SYNTHETIC_CAR_ID, 'skins', 'my_livery')
+    // generated files win over copied ones
+    expect(JSON.parse(await readFile(join(dir, 'ui_skin.json'), 'utf8')).skinname).toBe('Mine')
+    expect(parseDds(new Uint8Array(await readFile(join(dir, 'Skin_00.dds')))).width).toBe(8)
+    const bad = request({ skinId: 'other', copyFiles: { fromSkin: '..', files: ['x'] } })
+    expect(await exportSkin(root, bad, encoders, '0')).toMatchObject({ ok: false, error: 'io' })
+  })
+
   it('writes png textures through the image encoder', async () => {
     const rgba = new Uint8Array(4 * 4 * 4)
     const result = await exportSkin(

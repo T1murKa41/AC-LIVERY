@@ -1,5 +1,5 @@
 import { useTranslation } from 'react-i18next'
-import { useStore, type LiveryMeta } from '../state/store'
+import { resolvePaintedTextures, useStore, type LiveryMeta } from '../state/store'
 
 const SWATCHES = [
   '#d7261e',
@@ -29,21 +29,96 @@ export function LiveryTab() {
   const exportLivery = useStore((s) => s.exportLivery)
   const dismiss = useStore((s) => s.dismissExport)
   const reveal = useStore((s) => s.backend.revealPath)
+  const candidates = useStore((s) => s.liveryCandidates)
+  const autoLivery = useStore((s) => s.autoLivery)
+  const shownSkin = useStore((s) => s.shownSkin)
+  const highlight = useStore((s) => s.highlight)
+  const setHighlight = useStore((s) => s.setHighlight)
 
-  if (!analysis?.bodyTexture) return <p className="notice warn">{t('livery.noTexture')}</p>
+  if (!analysis || candidates.length === 0) {
+    return <p className="notice warn">{t('livery.noTexture')}</p>
+  }
 
-  const aoSkins = (car?.skins ?? []).filter(
-    (s) => !s.ours && s.files.some((f) => f.toLowerCase() === analysis.bodyTexture!.toLowerCase()),
-  )
+  const painted = resolvePaintedTextures(draft, candidates, autoLivery)
+  const paintedKeys = new Set(painted.map((n) => n.toLowerCase()))
+  const autoKeys = new Set(autoLivery.map((n) => n.toLowerCase()))
+  const toggleTexture = (name: string, on: boolean) => {
+    const next = candidates
+      .map((c) => c.name)
+      .filter((n) => (n === name ? on : paintedKeys.has(n.toLowerCase())))
+    update({ liveryTextures: next.length ? next : 'auto' })
+  }
+  const stockSkins = (car?.skins ?? []).filter((s) => !s.ours)
+  const skinLabel = (id: string) => car?.skins.find((s) => s.id === id)?.ui?.skinname || id
+  const aoSkins = stockSkins.filter((s) => s.files.some((f) => paintedKeys.has(f.toLowerCase())))
   const sourceLabel = (source: string) =>
     source === 'model'
       ? t('livery.aoModel')
       : source.startsWith('skin:')
-        ? (car?.skins.find((s) => s.id === source.slice(5))?.ui?.skinname ?? source.slice(5))
+        ? skinLabel(source.slice(5))
         : t('livery.aoNone')
+  const visibleMax = Math.max(...candidates.map((c) => c.visible), 0.0001)
 
   return (
     <div className="form">
+      <section>
+        <h3>{t('livery.target')}</h3>
+        <p className="hint">{t('livery.targetHint')}</p>
+        <ul className="texture-list">
+          {candidates.map((c) => (
+            <li key={c.name}>
+              <label className="check texture-row">
+                <input
+                  type="checkbox"
+                  checked={paintedKeys.has(c.name.toLowerCase())}
+                  onChange={(e) => toggleTexture(c.name, e.target.checked)}
+                />
+                <span className="mono texture-name" title={c.name}>
+                  {c.name}
+                </span>
+                {autoKeys.has(c.name.toLowerCase()) && (
+                  <span className="tag accent">{t('livery.auto')}</span>
+                )}
+                <span className="texture-share mono">{Math.round(c.visible * 100)}%</span>
+              </label>
+              <span className="share-bar" aria-hidden>
+                <span style={{ width: `${(c.visible / visibleMax) * 100}%` }} />
+              </span>
+            </li>
+          ))}
+        </ul>
+        {draft.liveryTextures !== 'auto' && (
+          <button className="btn ghost small" onClick={() => update({ liveryTextures: 'auto' })}>
+            {t('livery.resetAuto')}
+          </button>
+        )}
+        <label className="check">
+          <input
+            type="checkbox"
+            checked={highlight}
+            onChange={(e) => setHighlight(e.target.checked)}
+          />
+          {t('livery.showOnCar')}
+        </label>
+        <label className="field">
+          <span>{t('livery.baseSkin')}</span>
+          <select value={draft.baseSkin} onChange={(e) => update({ baseSkin: e.target.value })}>
+            <option value="auto">
+              {t('livery.baseSkinAuto', {
+                skin: shownSkin ? skinLabel(shownSkin) : t('livery.aoModel'),
+              })}
+            </option>
+            {stockSkins.map((s) => (
+              <option key={s.id} value={s.id}>
+                {skinLabel(s.id)}
+              </option>
+            ))}
+            <option value="model">{t('livery.aoModel')}</option>
+          </select>
+          <small className="hint">{t('livery.baseSkinHint')}</small>
+        </label>
+      </section>
+
       <section>
         <h3>{t('livery.base')}</h3>
         <div className="color-row">

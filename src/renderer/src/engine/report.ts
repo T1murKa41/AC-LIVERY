@@ -3,7 +3,7 @@
 
 import type { CarDetails } from '@shared/api'
 import { isDds, parseDds } from '@shared/formats/dds'
-import type { SkinTextureStatus } from './controller'
+import type { LiveryCandidate, SkinTextureStatus } from './controller'
 import type { LoadedCar } from './types'
 
 function textureFormat(data: Uint8Array): string {
@@ -30,6 +30,8 @@ export interface ReportInput {
   loaded: LoadedCar
   shownSkin: string | null
   skinStatus: readonly SkinTextureStatus[]
+  candidates?: readonly LiveryCandidate[]
+  painted?: readonly string[]
   appVersion?: string
 }
 
@@ -38,6 +40,8 @@ export function buildReport({
   loaded,
   shownSkin,
   skinStatus,
+  candidates = [],
+  painted = [],
   appVersion,
 }: ReportInput): string {
   const a = loaded.analysis
@@ -57,6 +61,13 @@ export function buildReport({
   push(
     `side uv overlap: ${a.sideUvOverlap === null ? '-' : a.sideUvOverlap.toFixed(3)}  flipWinding: ${a.flipWinding}  warnings: ${a.warnings.join(', ') || '-'}`,
   )
+
+  if (candidates.length) {
+    push(
+      `livery candidates (visible share): ${candidates.map((c) => `${c.name}=${(c.visible * 100).toFixed(1)}%`).join(', ')}`,
+    )
+    push(`painted: ${painted.join(', ') || '-'}`)
+  }
 
   push()
   push(`skins (${car.skins.length}), shown: ${shownSkin ?? 'model'}`)

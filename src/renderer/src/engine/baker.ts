@@ -118,8 +118,8 @@ export class LiveryBaker {
   private readonly finalMaterial: THREE.ShaderMaterial
   private ping: THREE.WebGLRenderTarget | null = null
   private pong: THREE.WebGLRenderTarget | null = null
-  /** Result texture, mipmapped; stays the same object across bakes of the same size. */
-  output: THREE.WebGLRenderTarget | null = null
+  /** One mipmapped result per texture name; kept across bakes of the same size. */
+  private readonly outputs = new Map<string, THREE.WebGLRenderTarget>()
 
   constructor(private readonly renderer: THREE.WebGLRenderer) {
     this.quad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2))
@@ -160,29 +160,46 @@ export class LiveryBaker {
     })
   }
 
-  private ensureTargets(width: number, height: number): void {
-    if (this.output && this.output.width === width && this.output.height === height) return
-    this.ping?.dispose()
-    this.pong?.dispose()
-    this.output?.dispose()
-    this.ping = nearestTarget(width, height)
-    this.pong = nearestTarget(width, height)
-    this.output = new THREE.WebGLRenderTarget(width, height, {
+  private ensureTargets(key: string, width: number, height: number): THREE.WebGLRenderTarget {
+    if (!this.ping || this.ping.width !== width || this.ping.height !== height) {
+      this.ping?.dispose()
+      this.pong?.dispose()
+      this.ping = nearestTarget(width, height)
+      this.pong = nearestTarget(width, height)
+    }
+    const existing = this.outputs.get(key)
+    if (existing && existing.width === width && existing.height === height) return existing
+    existing?.dispose()
+    const output = new THREE.WebGLRenderTarget(width, height, {
       minFilter: THREE.LinearMipmapLinearFilter,
       magFilter: THREE.LinearFilter,
       generateMipmaps: true,
       depthBuffer: false,
       anisotropy: 8,
     })
-    const t = this.output.texture
+    const t = output.texture
     t.flipY = false
     t.colorSpace = THREE.NoColorSpace
     t.wrapS = t.wrapT = THREE.RepeatWrapping
+    this.outputs.set(key, output)
+    return output
   }
 
-  bake(meshes: BakeMesh[], settings: BakeSettings): THREE.Texture {
+  /** Drops results for textures that are no longer painted. */
+  keepOnly(keys: Iterable<string>): void {
+    const keep = new Set(keys)
+    for (const [key, target] of this.outputs) {
+      if (!keep.has(key)) {
+        target.dispose()
+        this.outputs.delete(key)
+      }
+    }
+  }
+
+  /** Bakes one texture (identified by `key`, the texture name) and returns the result. */
+  bake(key: string, meshes: BakeMesh[], settings: BakeSettings): THREE.Texture {
     const { width, height } = settings
-    this.ensureTargets(width, height)
+    const output = this.ensureTargets(key, width, height)
     const r = this.renderer
     const prevTarget = r.getRenderTarget()
     const prevClear = r.getClearColor(new THREE.Color())
@@ -228,19 +245,19 @@ export class LiveryBaker {
     u.hasAlpha!.value = !!settings.alphaSource
     u.fillColor!.value.set(...settings.baseColor)
     this.quad.material = this.finalMaterial
-    r.setRenderTarget(this.output)
+    r.setRenderTarget(output)
     r.render(this.quadScene, this.camera)
 
     r.setRenderTarget(prevTarget)
     r.setClearColor(prevClear, prevAlpha)
     r.autoClear = prevAutoClear
-    return this.output!.texture
+    return output.texture
   }
 
-  /** Reads the last bake as RGBA8, row 0 = first row of the texture file. */
-  readPixels(): { width: number; height: number; rgba: Uint8Array } {
-    const out = this.output
-    if (!out) throw new Error('Nothing baked yet')
+  /** Reads a baked texture as RGBA8, row 0 = first row of the texture file. */
+  readPixels(key: string): { width: number; height: number; rgba: Uint8Array } {
+    const out = this.outputs.get(key)
+    if (!out) throw new Error(`Nothing baked for ${key}`)
     const rgba = new Uint8Array(out.width * out.height * 4)
     this.renderer.readRenderTargetPixels(out, 0, 0, out.width, out.height, rgba)
     return { width: out.width, height: out.height, rgba }
@@ -249,7 +266,7 @@ export class LiveryBaker {
   dispose(): void {
     this.ping?.dispose()
     this.pong?.dispose()
-    this.output?.dispose()
+    this.keepOnly([])
     this.designMaterial.dispose()
     this.dilateMaterial.dispose()
     this.finalMaterial.dispose()

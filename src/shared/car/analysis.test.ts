@@ -80,6 +80,18 @@ describe('analyzeCar', () => {
   })
 })
 
+describe('analyzeCar with a livery overlay', () => {
+  it('lists both textures as paintable with equal body area', () => {
+    const car = buildSyntheticCar({ overlayLivery: true })
+    const a = analyzeCar(parseKn5(car.kn5), { skinFileNames: skinFiles(car.files) })
+    expect(a.paintable).toEqual(expect.arrayContaining([BODY_TEXTURE, 'Livery.dds']))
+    const body = a.diffuseUsage.find((u) => u.name === BODY_TEXTURE)!
+    const overlay = a.diffuseUsage.find((u) => u.name === 'Livery.dds')!
+    // area alone cannot tell which one is visible: the viewer measures that
+    expect(overlay.area).toBeCloseTo(body.area, 0)
+  })
+})
+
 describe('categorize', () => {
   it('sorts meshes by name', () => {
     expect(categorize('WINDSCREEN', 'glass_mat', false)).toBe('glass')

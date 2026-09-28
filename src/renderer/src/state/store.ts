@@ -17,6 +17,7 @@ import {
   encodeImage,
   renderLiveryIcon,
   type AoSource,
+  type LiveryCandidate,
   type SkinTextureStatus,
 } from '../engine/controller'
 import { buildReport, describeMesh } from '../engine/report'
@@ -32,6 +33,10 @@ export interface LiveryMeta {
 }
 
 export interface LiveryDraft {
+  /** Textures to repaint: 'auto' follows the detected livery texture. */
+  liveryTextures: 'auto' | string[]
+  /** Skin for the remaining textures: 'auto' = the skin shown on the Skins tab. */
+  baseSkin: 'auto' | 'model' | string
   baseColor: string
   aoSource: AoSource
   aoStrength: number
@@ -57,6 +62,8 @@ export type ExportState =
 export type PanelTab = 'skins' | 'livery' | 'info'
 
 export const DEFAULT_DRAFT: LiveryDraft = {
+  liveryTextures: 'auto',
+  baseSkin: 'auto',
   baseColor: '#d7261e',
   aoSource: 'auto',
   aoStrength: 0.85,
@@ -87,6 +94,8 @@ interface State {
   skinStatus: SkinTextureStatus[]
   pickedMesh: number | null
   showHidden: boolean
+  liveryCandidates: LiveryCandidate[]
+  autoLivery: string[]
 }
 
 interface Actions {
@@ -110,6 +119,10 @@ interface Actions {
   clearPick(): void
   diagnosticsReport(): string
   describePicked(): string[]
+  /** Textures that will actually be repainted with the current draft. */
+  paintedTextures(): string[]
+  /** Skin whose textures are kept for everything else (null = model). */
+  baseSkinId(): string | null
   attachEngine(controller: EngineController | null): void
 }
 
@@ -119,19 +132,21 @@ let bakeRunning: Promise<void> | null = null
 
 export const useStore = create<State & Actions>((set, get) => {
   const bakeOnce = async (): Promise<void> => {
-    const { draft, analysis, tab } = get()
-    if (!engine || !analysis?.bodyTexture || tab !== 'livery') return
+    const { analysis, tab } = get()
+    if (!engine || !analysis || tab !== 'livery') return
+    const draft = get().draft
     const needsAo = draft.aoSource !== 'none' && draft.aoStrength > 0
     if (needsAo) set({ aoStatus: 'working' })
     try {
-      const ao = needsAo ? await engine.resolveAo(draft.aoSource) : { used: 'none', texture: null }
-      // the draft may have changed while AO was computed
-      const latest = get().draft
-      await engine.bakeLivery(
-        { baseColor: latest.baseColor, aoSource: latest.aoSource, aoStrength: latest.aoStrength },
-        ao,
-      )
-      set({ aoStatus: 'ready', aoUsed: ao.used })
+      const { aoUsed } = await engine.bakeLivery({
+        baseColor: draft.baseColor,
+        aoSource: draft.aoSource,
+        aoStrength: draft.aoStrength,
+        textures: get().paintedTextures(),
+        baseSkin: get().baseSkinId(),
+      })
+      set({ aoStatus: 'ready', aoUsed })
+      if (get().highlight) engine.highlightTextures(get().paintedTextures())
     } catch (err) {
       console.error(err)
       set({ aoStatus: 'ready', aoUsed: 'none' })
@@ -177,6 +192,8 @@ export const useStore = create<State & Actions>((set, get) => {
     skinStatus: [],
     pickedMesh: null,
     showHidden: false,
+    liveryCandidates: [],
+    autoLivery: [],
 
     async init() {
       const settings = await get().backend.getSettings()
@@ -253,6 +270,8 @@ export const useStore = create<State & Actions>((set, get) => {
         view: 'perspective',
         aoUsed: null,
         aoStatus: 'idle',
+        liveryCandidates: [],
+        autoLivery: [],
       })
       try {
         const car = await backend.getCar(carId)
@@ -260,9 +279,19 @@ export const useStore = create<State & Actions>((set, get) => {
         if (!engine) throw new Error('Viewer is not ready')
         const { analysis, warnings } = await engine.loadCar(car)
         const firstSkin = car.skins.find((s) => !s.ours)?.id ?? car.skins[0]?.id ?? null
-        set({ analysis, loadWarnings: warnings, load: { status: 'ready' } })
+        // candidates are measured with a stock skin on, so overlays have their real alpha
+        const skinStatus = await engine.showSkin(firstSkin)
+        const liveryCandidates = engine.detectLiveryCandidates()
+        set({
+          analysis,
+          loadWarnings: warnings,
+          load: { status: 'ready' },
+          shownSkin: firstSkin,
+          skinStatus,
+          liveryCandidates,
+          autoLivery: engine.autoLiveryTextures(),
+        })
         if (get().tab === 'livery') void rebake()
-        else await get().showSkin(firstSkin)
       } catch (err) {
         const kind = (err as { kind?: string }).kind
         if (kind === 'cancelled') return
@@ -325,7 +354,9 @@ export const useStore = create<State & Actions>((set, get) => {
       if (
         patch.baseColor !== undefined ||
         patch.aoSource !== undefined ||
-        patch.aoStrength !== undefined
+        patch.aoStrength !== undefined ||
+        patch.liveryTextures !== undefined ||
+        patch.baseSkin !== undefined
       ) {
         void rebake()
       }
@@ -355,7 +386,7 @@ export const useStore = create<State & Actions>((set, get) => {
       try {
         // make sure the texture on screen is the one that gets saved
         if (bakeRunning || !engine.hasLivery) await rebake()
-        const textures = engine.exportTextures()
+        const { textures, copyFiles } = engine.exportPayload()
         if (!textures.length) throw new Error(i18n.t('livery.noTexture'))
         const preview = await engine.previewSize()
         const previewJpg = await encodeImage(
@@ -373,6 +404,7 @@ export const useStore = create<State & Actions>((set, get) => {
           carId: car.id,
           skinId: draft.skinId,
           textures,
+          copyFiles,
           encoding: 'auto',
           uiSkin: { skinname: draft.skinId, ...meta },
           previewJpg,
@@ -417,8 +449,20 @@ export const useStore = create<State & Actions>((set, get) => {
     },
 
     setHighlight(on) {
-      engine?.highlightLivery(on)
+      engine?.highlightTextures(on ? get().paintedTextures() : null)
       set({ highlight: on })
+    },
+
+    paintedTextures() {
+      const { draft, liveryCandidates, autoLivery } = get()
+      return resolvePaintedTextures(draft, liveryCandidates, autoLivery)
+    },
+
+    baseSkinId() {
+      const { draft, car, shownSkin } = get()
+      if (draft.baseSkin === 'model') return null
+      const wanted = draft.baseSkin === 'auto' ? shownSkin : draft.baseSkin
+      return car?.skins.some((s) => s.id === wanted) ? wanted : null
     },
 
     setShowHidden(show) {
@@ -435,7 +479,14 @@ export const useStore = create<State & Actions>((set, get) => {
       const { car, shownSkin, skinStatus } = get()
       const loaded = engine?.viewer.loadedCar
       if (!car || !loaded) return ''
-      return buildReport({ car, loaded, shownSkin, skinStatus })
+      return buildReport({
+        car,
+        loaded,
+        shownSkin,
+        skinStatus,
+        candidates: get().liveryCandidates,
+        painted: get().paintedTextures(),
+      })
     },
 
     describePicked() {
@@ -457,6 +508,18 @@ export const useStore = create<State & Actions>((set, get) => {
     },
   }
 })
+
+/** Textures repainted for a draft: an explicit choice, or the automatic pick. */
+export function resolvePaintedTextures(
+  draft: LiveryDraft,
+  candidates: LiveryCandidate[],
+  autoLivery: string[],
+): string[] {
+  if (draft.liveryTextures === 'auto') return autoLivery
+  const known = new Set(candidates.map((c) => c.name.toLowerCase()))
+  const chosen = draft.liveryTextures.filter((t) => known.has(t.toLowerCase()))
+  return chosen.length ? chosen : autoLivery
+}
 
 export function filteredCars(cars: CarSummary[], filter: string): CarSummary[] {
   const q = filter.trim().toLowerCase()

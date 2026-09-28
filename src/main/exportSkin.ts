@@ -5,7 +5,7 @@
 // created by AC Livery are only replaced with an explicit 'always'.
 
 import { randomBytes } from 'node:crypto'
-import { access, mkdir, rename, rm, writeFile } from 'node:fs/promises'
+import { access, copyFile, mkdir, rename, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import {
   isValidSkinId,
@@ -93,6 +93,14 @@ export async function exportSkin(
   const staging = join(carPath, 'skins', `.${skinId}.aclivery-${suffix}`)
   try {
     await mkdir(staging, { recursive: true })
+    if (request.copyFiles) {
+      const { fromSkin, files } = request.copyFiles
+      if (!isSafeSegment(fromSkin)) throw new Error(`Invalid source skin "${fromSkin}"`)
+      for (const file of files) {
+        if (!isSafeSegment(file)) throw new Error(`Invalid file name "${file}"`)
+        await copyFile(join(carPath, 'skins', fromSkin, file), join(staging, file))
+      }
+    }
     for (const tex of request.textures) {
       if (!isSafeSegment(tex.name)) throw new Error(`Invalid texture name "${tex.name}"`)
       if (tex.rgba.byteLength !== tex.width * tex.height * 4) {

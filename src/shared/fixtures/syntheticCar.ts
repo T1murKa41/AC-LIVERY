@@ -125,7 +125,7 @@ function buildBody(sharedUv: boolean): MeshBuilder {
     const v1 = 0.4 + ((acc + len) / total) * 0.58
     acc += len
     // outward normal of the edge in the (z, y) plane
-    const n = normalize([0, -(b[0] - a[0]), b[1] - a[1]])
+    const n = normalize([0, b[0] - a[0], -(b[1] - a[1])])
     quad(
       m,
       [
@@ -407,6 +407,19 @@ export const DECAL_TEXTURE = 'decals.dds'
 export interface SyntheticCarOptions {
   /** Left and right sides share one UV island (like some real cars). */
   sharedSideUv?: boolean
+  /**
+   * Adds an opaque livery layer (Livery.dds) just above the painted body, so
+   * the body texture is completely hidden. The texture that carries the
+   * visible paint is then not the one with the most "body" area.
+   */
+  overlayLivery?: boolean
+}
+
+export const OVERLAY_TEXTURE = 'Livery.dds'
+
+function offsetAlongNormals(m: MeshBuilder, distance: number): MeshBuilder {
+  const positions = m.positions.map((v, i) => v + m.normals[i]! * distance)
+  return { ...m, positions }
 }
 
 export interface SyntheticCar {
@@ -457,6 +470,17 @@ export function buildSyntheticCar(options: SyntheticCarOptions = {}): SyntheticC
       prop('ksSpecular', 0.2),
       prop('ksSpecularEXP', 30),
     ]),
+    material(
+      'Material_Livery',
+      'ksPerPixelMultiMap',
+      { txDiffuse: OVERLAY_TEXTURE, txMaps: MAPS_TEXTURE },
+      [
+        prop('ksAmbient', 0.45),
+        prop('ksDiffuse', 0.45),
+        prop('ksSpecular', 0.35),
+        prop('ksSpecularEXP', 40),
+      ],
+    ),
   ]
 
   const wheel = (name: string, x: number, z: number): Kn5Node => ({
@@ -482,6 +506,9 @@ export function buildSyntheticCar(options: SyntheticCarOptions = {}): SyntheticC
           meshNode('BODY_PAINT', 0, buildBody(options.sharedSideUv ?? false)),
           meshNode('GLASS_WINDSCREEN', 2, buildGlass()),
           meshNode('DECAL_SPONSOR_L', 3, buildDecal()),
+          ...(options.overlayLivery
+            ? [meshNode('BODY_LIVERY', 4, offsetAlongNormals(buildBody(false), 0.004))]
+            : []),
         ],
       },
       wheel('WHEEL_LF', HALF_W + 0.01, 1.45),
@@ -503,6 +530,15 @@ export function buildSyntheticCar(options: SyntheticCarOptions = {}): SyntheticC
       { name: 'rim.dds', active: 1, data: encode(image(64, [150, 150, 155])) },
       { name: 'glass.dds', active: 1, data: encode(image(16, [30, 35, 40])) },
       { name: DECAL_TEXTURE, active: 1, data: encodeAlpha(paintDecal([255, 120, 20])) },
+      ...(options.overlayLivery
+        ? [
+            {
+              name: OVERLAY_TEXTURE,
+              active: 1,
+              data: encode(paintSkin([20, 20, 22], [240, 240, 240])),
+            },
+          ]
+        : []),
     ],
     materials,
     root,
@@ -527,6 +563,12 @@ export function buildSyntheticCar(options: SyntheticCarOptions = {}): SyntheticC
         team: 'Test',
       }),
     ),
+  }
+  if (options.overlayLivery) {
+    files[`skins/00_white/${OVERLAY_TEXTURE}`] = encode(paintSkin([235, 235, 232], null))
+    files[`skins/01_red_stripe/${OVERLAY_TEXTURE}`] = encode(
+      paintSkin([20, 20, 22], [240, 240, 240]),
+    )
   }
   return { id: SYNTHETIC_CAR_ID, kn5, files }
 }

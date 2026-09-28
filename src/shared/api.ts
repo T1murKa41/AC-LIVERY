@@ -58,6 +58,11 @@ export interface ExportRequest {
   previewJpg?: Uint8Array
   liveryPng?: Uint8Array
   overwrite: OverwriteMode
+  /**
+   * Files copied unchanged from another skin of the same car, e.g. textures
+   * that are not repainted. Written before `textures`, which win on conflict.
+   */
+  copyFiles?: { fromSkin: string; files: string[] }
   /** Stored in the marker file to allow reopening the design later. */
   project?: unknown
 }

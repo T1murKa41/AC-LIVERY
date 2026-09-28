@@ -771,3 +771,44 @@ button.skin-item {
   margin: 0;
   padding-left: 16px;
 }
+
+.texture-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.texture-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.texture-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.texture-share {
+  color: var(--muted);
+}
+
+.share-bar {
+  display: block;
+  height: 3px;
+  margin: 4px 0 0 24px;
+  border-radius: 2px;
+  background: var(--panel-3);
+}
+
+.share-bar > span {
+  display: block;
+  height: 100%;
+  border-radius: 2px;
+  background: var(--accent);
+}

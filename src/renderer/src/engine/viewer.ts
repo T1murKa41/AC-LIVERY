@@ -443,6 +443,115 @@ export class Viewer {
   }
 
   // -------------------------------------------------------------------------
+  // Visibility
+
+  /**
+   * How much of the visible car surface each diffuse texture covers, measured
+   * by rendering texture ids from several angles. Overlays win over what lies
+   * beneath them, and transparent texels (alpha < 0.5) do not count, so this
+   * finds the texture that actually carries the paint people see.
+   * Keys are lower-case texture names; values are shares of car pixels.
+   */
+  measureVisibleTextures(size = 256): Map<string, number> {
+    const car = this.car
+    const f = this.frame
+    const result = new Map<string, number>()
+    if (!car || !f || !this.carRoot) return result
+
+    const names: string[] = []
+    const idOf = new Map<string, number>()
+    const idMaterials = car.materials.map((m, i) => {
+      const diffuse = m.textures.find((t) => t.name === 'txDiffuse')?.texture?.toLowerCase()
+      let id = 0
+      if (diffuse) {
+        if (!idOf.has(diffuse)) {
+          names.push(diffuse)
+          idOf.set(diffuse, names.length)
+        }
+        id = idOf.get(diffuse)!
+      }
+      const src = this.materials[i]!
+      return new THREE.ShaderMaterial({
+        vertexShader: /* glsl */ `varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+        fragmentShader: /* glsl */ `
+          uniform sampler2D tx; uniform bool useAlpha; uniform float id; varying vec2 vUv;
+          void main() {
+            if (useAlpha && texture2D(tx, vUv).a < 0.5) discard;
+            gl_FragColor = vec4(mod(id, 256.0) / 255.0, floor(id / 256.0) / 255.0, 0.0, 1.0);
+          }`,
+        uniforms: {
+          tx: { value: src.uniforms.txDiffuse!.value },
+          useAlpha: { value: src.transparent || src.uniforms.alphaTested!.value },
+          id: { value: id },
+        },
+        side: THREE.DoubleSide,
+        depthTest: src.depthTest,
+        polygonOffset: src.polygonOffset,
+        polygonOffsetFactor: src.polygonOffsetFactor,
+        polygonOffsetUnits: src.polygonOffsetUnits,
+      })
+    })
+
+    const saved = this.meshes.map(({ mesh }) => mesh.material)
+    this.meshes.forEach(({ mesh, source }) => {
+      mesh.material = idMaterials[source.materialId] ?? idMaterials[0]!
+    })
+    const hiddenHelpers = [this.background, this.ground].filter((o): o is THREE.Mesh => !!o)
+    hiddenHelpers.forEach((o) => (o.visible = false))
+
+    const target = new THREE.WebGLRenderTarget(size, size)
+    const cam = new THREE.PerspectiveCamera(30, 1, 0.05, 200)
+    const origin = this.toDisplay(f.origin)
+    const forward = this.toDisplay(f.forward)
+    const left = this.toDisplay(f.left)
+    const up = new THREE.Vector3(0, 1, 0)
+    const radius = Math.hypot(f.length, f.width, f.height) / 2
+    const dist = (radius / Math.sin(THREE.MathUtils.degToRad(cam.fov / 2))) * 1.05
+    const dirs = [
+      forward.clone().add(left).addScaledVector(up, 0.4),
+      forward.clone().sub(left).addScaledVector(up, 0.4),
+      forward.clone().negate().add(left).addScaledVector(up, 0.4),
+      forward.clone().negate().sub(left).addScaledVector(up, 0.4),
+      left.clone().addScaledVector(up, 0.15),
+      left.clone().negate().addScaledVector(up, 0.15),
+      up.clone().addScaledVector(forward, 0.05),
+    ]
+    const counts = new Map<number, number>()
+    let total = 0
+    const pixels = new Uint8Array(size * size * 4)
+    const prevTarget = this.renderer.getRenderTarget()
+    const prevClear = this.renderer.getClearColor(new THREE.Color())
+    const prevAlpha = this.renderer.getClearAlpha()
+    this.renderer.setClearColor(0x000000, 0)
+    for (const dir of dirs) {
+      cam.position.copy(origin).addScaledVector(dir.normalize(), dist)
+      cam.lookAt(origin)
+      this.renderer.setRenderTarget(target)
+      this.renderer.clear()
+      this.renderer.render(this.scene, cam)
+      this.renderer.readRenderTargetPixels(target, 0, 0, size, size, pixels)
+      for (let i = 0; i < pixels.length; i += 4) {
+        if (pixels[i + 3] === 0) continue
+        total++
+        const id = pixels[i]! + pixels[i + 1]! * 256
+        if (id) counts.set(id, (counts.get(id) ?? 0) + 1)
+      }
+    }
+    this.renderer.setRenderTarget(prevTarget)
+    this.renderer.setClearColor(prevClear, prevAlpha)
+    target.dispose()
+    this.meshes.forEach(({ mesh }, i) => {
+      mesh.material = saved[i]!
+    })
+    hiddenHelpers.forEach((o) => (o.visible = true))
+    for (const m of idMaterials) m.dispose()
+    this.requestRender()
+
+    names.forEach((name, i) => result.set(name, total ? (counts.get(i + 1) ?? 0) / total : 0))
+    return result
+  }
+
+  // -------------------------------------------------------------------------
   // Capture
 
   /**

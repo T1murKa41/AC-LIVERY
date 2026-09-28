@@ -20,8 +20,8 @@ const dec = new TextDecoder()
 
 export function createMockBackend(): Backend {
   const files = new Map<string, Uint8Array>()
-  const addCar = (id: string, name: string, shared: boolean) => {
-    const car = buildSyntheticCar({ sharedSideUv: shared })
+  const addCar = (id: string, name: string, shared: boolean, overlay = false) => {
+    const car = buildSyntheticCar({ sharedSideUv: shared, overlayLivery: overlay })
     for (const [rel, data] of Object.entries(car.files)) {
       const renamed = rel.replace(car.id, id)
       files.set(
@@ -34,6 +34,7 @@ export function createMockBackend(): Backend {
   }
   addCar('aclivery_test_coupe', 'AC Livery Test Coupe', false)
   addCar('aclivery_test_shared_uv', 'AC Livery Test Coupe (shared UV)', true)
+  addCar('aclivery_test_overlay', 'AC Livery Test Coupe (livery overlay)', false, true)
 
   if (import.meta.env.DEV) {
     // lets end-to-end scripts inspect exported files
@@ -137,6 +138,14 @@ export function createMockBackend(): Backend {
         if (req.overwrite === 'ours' && !ours)
           return { ok: false, error: 'not-ours', message: 'not ours' }
         for (const f of existing) files.delete(dir + f)
+      }
+      if (req.copyFiles) {
+        const from = `content/cars/${req.carId}/skins/${req.copyFiles.fromSkin}/`
+        for (const f of req.copyFiles.files) {
+          const data = files.get(from + f)
+          if (!data) return { ok: false, error: 'io', message: `Cannot copy ${f}` }
+          files.set(dir + f, data)
+        }
       }
       for (const t of req.textures) {
         const format =
