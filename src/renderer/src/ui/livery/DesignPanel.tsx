@@ -1,10 +1,13 @@
 import { useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import {
+  FINISHES,
   SHAPES,
   SYSTEM_FONTS,
   fontAssetId,
+  type BaseFinish,
   type Layer,
+  type LayerFinish,
   type MirrorMode,
   type TextLayer,
 } from '@shared/design/types'
@@ -23,7 +26,9 @@ export function DesignPanel() {
   const addText = useStore((s) => s.addText)
   const addImage = useStore((s) => s.addImage)
   const error = useStore((s) => s.designError)
+  const finishMaps = useStore((s) => s.finishMaps)
   const imageInput = useRef<HTMLInputElement>(null)
+  const baseFinish = draft.baseFinish ?? 'stock'
 
   return (
     <>
@@ -35,6 +40,22 @@ export function DesignPanel() {
           label={t('livery.base')}
           swatches
         />
+        <label className="field">
+          <span>{t('design.baseFinish')}</span>
+          <select
+            value={baseFinish}
+            onChange={(e) => update({ baseFinish: e.target.value as BaseFinish })}
+          >
+            {(['stock', ...FINISHES] as const).map((f) => (
+              <option key={f} value={f}>
+                {t(`design.finishes.${f}`)}
+              </option>
+            ))}
+          </select>
+        </label>
+        {baseFinish !== 'stock' && finishMaps.length === 0 && (
+          <p className="hint">{t('design.noFinishMaps')}</p>
+        )}
       </section>
 
       <section>
@@ -271,6 +292,21 @@ function LayerProperties() {
       )}
 
       {layer.kind === 'text' && <TextProperties layer={layer} disabled={disabled} />}
+
+      <label className="field">
+        <span>{t('design.finish')}</span>
+        <select
+          value={layer.finish ?? 'base'}
+          disabled={disabled}
+          onChange={(e) => void updateLayer(layer.id, { finish: e.target.value as LayerFinish })}
+        >
+          {(['base', ...FINISHES] as const).map((f) => (
+            <option key={f} value={f}>
+              {t(`design.finishes.${f}`)}
+            </option>
+          ))}
+        </select>
+      </label>
 
       <Slider
         label={t('design.width')}

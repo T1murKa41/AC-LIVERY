@@ -264,3 +264,71 @@ test('text vinyls are baked onto the body', async ({ page }) => {
   // the orange selection outline must not be in the preview
   expect(await previewShare(page, dir, 'orange')).toBe(0)
 })
+
+test('finishes are written into the material map', async ({ page }) => {
+  await openCar(page)
+  await page.locator('.tabs button').nth(1).click()
+  await page.getByRole('combobox', { name: /^(Финиш основы|Base finish)$/ }).selectOption('matte')
+  // a glossy stripe on the matte car
+  await page.locator('.add-grid .tool').first().click()
+  await page.getByRole('combobox', { name: /^(Финиш|Finish)$/ }).selectOption('gloss')
+
+  await panel(page, 'save')
+  await page.getByLabel(/^(Название|Name)$/).fill('Matte Test')
+  await page.locator('.btn.primary.wide').click()
+  await expect(page.locator('.notice.ok')).toBeVisible({ timeout: 60_000 })
+
+  const maps = await page.evaluate(() => {
+    const all = (globalThis as unknown as { __aclMockFiles: Map<string, Uint8Array> })
+      .__aclMockFiles
+    const dds = all.get('content/cars/aclivery_test_coupe/skins/matte_test/Skin_00_Maps.dds')
+    if (!dds) return null
+    // BC1 blocks: the first endpoint's red channel tells the specular level
+    const view = new DataView(dds.buffer, dds.byteOffset, dds.byteLength)
+    const width = view.getUint32(16, true)
+    const height = view.getUint32(12, true)
+    const blocks = Math.ceil(width / 4) * Math.ceil(height / 4)
+    let dark = 0
+    let bright = 0
+    for (let i = 0; i < blocks; i++) {
+      const c0 = view.getUint16(128 + i * 8, true)
+      const r = ((c0 >> 11) * 255) / 31
+      if (r < 60) dark++
+      if (r > 240) bright++
+    }
+    return { dark: dark / blocks, bright: bright / blocks }
+  })
+  expect(maps).not.toBeNull()
+  expect(maps!.dark).toBeGreaterThan(0.2)
+  expect(maps!.bright).toBeGreaterThan(0.003)
+})
+
+test('projects save and open, unsaved work is restored after a restart', async ({ page }) => {
+  await openCar(page)
+  await page.locator('.tabs button').nth(1).click()
+  await page.locator('.add-grid .tool').nth(2).click() // circle
+  await expect(page.locator('.layer-row')).toHaveCount(1)
+  await expect(page.locator('.project-name')).toContainText(/не сохранён|unsaved/)
+
+  await page.keyboard.press('Control+s')
+  await expect(page.locator('.project-name')).toHaveText(/^My Livery\.aclivery$/)
+
+  // wipe the design, then open the saved project again
+  await page.locator('.btn.ghost.small', { hasText: /Удалить все слои|Delete all layers/ }).click()
+  await expect(page.locator('.layer-row')).toHaveCount(0)
+  page.once('dialog', (d) => void d.accept())
+  await page.getByRole('button', { name: /Открыть проект|Open project/ }).click()
+  await expect(page.locator('.layer-row')).toHaveCount(1)
+  await expect(page.locator('.project-name')).toHaveText(/^My Livery\.aclivery$/)
+
+  // unsaved work survives a reload through the autosave
+  await page.locator('.add-grid .tool').nth(5).click() // star
+  await expect(page.locator('.layer-row')).toHaveCount(2)
+  await page.waitForTimeout(2500)
+  await page.reload()
+  await expect(page.locator('.app-bar')).toContainText(/AC Livery Test Coupe/)
+  await page.getByRole('button', { name: /Восстановить|Restore/ }).click()
+  await expect(page.locator('.view-toolbar')).toBeVisible({ timeout: 60_000 })
+  await expect(page.locator('.layer-row')).toHaveCount(2)
+  await expect(page.locator('.app-bar')).toHaveCount(0)
+})

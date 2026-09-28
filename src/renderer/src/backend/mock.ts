@@ -15,6 +15,8 @@ import { hasTransparency, writeDds } from '@shared/formats/dds'
 import { asRecord, asString, parseLenientJson } from '@shared/formats/json'
 import { parseUiSkin, serializeUiSkin } from '@shared/formats/uiSkin'
 
+const MOCK_PROJECTS = 'projects/'
+const AUTOSAVE_KEY = 'aclivery.autosave'
 const enc = new TextEncoder()
 const dec = new TextDecoder()
 
@@ -42,6 +44,7 @@ export function createMockBackend(): Backend {
   }
 
   let settings: AppSettings = { acRoot: 'mock://assettocorsa', language: 'ru' }
+  let lastProject: string | null = null
 
   const children = (prefix: string) => {
     const dirs = new Set<string>()
@@ -163,6 +166,32 @@ export function createMockBackend(): Backend {
     },
     async revealPath() {
       // nothing to reveal in the browser
+    },
+    // projects live next to the game files, under a folder the game never sees
+    async saveProject(bytes, { path, suggestedName }) {
+      const target = path?.startsWith(MOCK_PROJECTS) ? path : MOCK_PROJECTS + suggestedName
+      files.set(target, bytes)
+      lastProject = target
+      return target
+    },
+    async openProject() {
+      const bytes = lastProject ? files.get(lastProject) : undefined
+      return lastProject && bytes ? { path: lastProject, bytes } : null
+    },
+    async readAutosave() {
+      try {
+        return localStorage.getItem(AUTOSAVE_KEY)
+      } catch {
+        return null
+      }
+    },
+    async writeAutosave(data) {
+      try {
+        if (data === null) localStorage.removeItem(AUTOSAVE_KEY)
+        else localStorage.setItem(AUTOSAVE_KEY, data)
+      } catch {
+        // storage unavailable: nothing to keep
+      }
     },
   }
 }

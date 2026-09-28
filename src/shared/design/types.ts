@@ -41,12 +41,35 @@ export interface Placement {
   mirror: MirrorMode
 }
 
+/**
+ * Surface finish, written into the car's material map (txMaps). The values
+ * scale the material's own coefficients: R specular, G glossiness,
+ * B reflection.
+ */
+export type Finish = 'gloss' | 'satin' | 'matte' | 'metallic'
+/** Finish of the base paint; 'stock' keeps the map of the base skin. */
+export type BaseFinish = 'stock' | Finish
+/** Finish of a vinyl; 'base' leaves the map as the base paint has it. */
+export type LayerFinish = 'base' | Finish
+
+export const FINISHES: Finish[] = ['gloss', 'satin', 'matte', 'metallic']
+
+export const FINISH_MAPS: Record<Finish, [number, number, number]> = {
+  gloss: [1, 1, 1],
+  satin: [0.45, 0.35, 0.3],
+  matte: [0.1, 0.08, 0.03],
+  // broad, strong highlight with full reflections
+  metallic: [1, 0.55, 1],
+}
+
 interface LayerBase {
   id: string
   name: string
   visible: boolean
   locked: boolean
   opacity: number
+  /** Missing in designs saved before finishes existed: same as 'base'. */
+  finish?: LayerFinish
   placement: Placement
 }
 

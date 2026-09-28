@@ -79,9 +79,49 @@ h3 {
 /* ---------------------------------------------------------------- layout */
 
 .app {
-  display: grid;
-  grid-template-rows: 44px 1fr;
+  display: flex;
+  flex-direction: column;
   height: 100%;
+}
+
+.app > .header {
+  flex: none;
+  height: 44px;
+}
+
+.app > .workspace,
+.app > .setup {
+  flex: 1;
+  min-height: 0;
+}
+
+.app-bar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 14px;
+  font-size: 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--warn-soft);
+}
+
+.app-bar.error {
+  background: var(--danger-soft);
+}
+
+.app-bar .grow {
+  flex: 1;
+  min-width: 0;
+}
+
+.project-name {
+  max-width: 220px;
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .workspace {

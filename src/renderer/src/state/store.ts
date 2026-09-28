@@ -23,6 +23,7 @@ import {
 import { logEntries } from '../engine/log'
 import { buildReport, describeMesh } from '../engine/report'
 import { fileToDataUrl, fontFamily, imageAspect, textAspect } from '../engine/vinyl'
+import { packProject, projectFileName, unpackProject } from '@shared/design/project'
 import { worldToPosition } from '@shared/design/placement'
 import {
   DEFAULT_PLACEMENT,
@@ -35,6 +36,7 @@ import {
   newTextLayer,
   pruneAssets,
   type Asset,
+  type BaseFinish,
   type Design,
   type ImageLayer,
   type Layer,
@@ -62,6 +64,8 @@ export interface LiveryDraft {
   /** Textures from the base skin to blank out, e.g. stock sponsor decals. */
   clearedTextures: string[]
   baseColor: string
+  /** Missing in drafts saved before finishes existed: 'stock'. */
+  baseFinish?: BaseFinish
   aoSource: AoSource
   aoStrength: number
   skinId: string
@@ -91,6 +95,7 @@ export const DEFAULT_DRAFT: LiveryDraft = {
   baseSkin: 'auto',
   clearedTextures: [],
   baseColor: '#d7261e',
+  baseFinish: 'stock',
   aoSource: 'auto',
   aoStrength: 0.85,
   skinId: 'my_livery',
@@ -102,8 +107,15 @@ export const DEFAULT_DRAFT: LiveryDraft = {
 /** Part of the draft covered by undo/redo. */
 interface Snapshot {
   baseColor: string
+  baseFinish: BaseFinish
   design: Design
 }
+
+const snapshot = (d: LiveryDraft): Snapshot => ({
+  baseColor: d.baseColor,
+  baseFinish: d.baseFinish ?? 'stock',
+  design: d.design,
+})
 
 export type LiveryPanel = 'design' | 'base' | 'save'
 
@@ -138,6 +150,22 @@ interface State {
   designError: string | null
   /** The selected vinyl does not reach any repainted surface. */
   selectedOffPaint: boolean
+  /** Material maps the finishes are written to (empty: finishes have no effect). */
+  finishMaps: string[]
+  /** Project file the draft was last opened from or saved to. */
+  projectPath: string | null
+  /** The draft changed since it was last saved, exported or opened. */
+  dirty: boolean
+  /** Unsaved work found at start-up, offered for restoring. */
+  recovery: Recovery | null
+  projectError: string | null
+}
+
+export interface Recovery {
+  savedAt: number
+  carId: string | null
+  projectPath: string | null
+  draft: LiveryDraft
 }
 
 interface Actions {
@@ -181,6 +209,12 @@ interface Actions {
   undo(): void
   redo(): void
   attachEngine(controller: EngineController | null): void
+  // projects
+  saveProject(saveAs?: boolean): Promise<void>
+  openProject(): Promise<void>
+  restoreRecovery(): Promise<void>
+  discardRecovery(): void
+  dismissProjectError(): void
 }
 
 /** Visual properties of any layer kind that can be edited. */
@@ -196,6 +230,9 @@ let lastHistoryAt = 0
 let drag: { id: string; offset: [number, number, number] } | null = null
 let bakeQueued = false
 let bakeRunning: Promise<void> | null = null
+/** Draft as last saved, exported or opened; anything else is unsaved work. */
+let cleanDraft: LiveryDraft = DEFAULT_DRAFT
+const AUTOSAVE_DELAY = 1500
 
 export const useStore = create<State & Actions>((set, get) => {
   const bakeOnce = async (): Promise<void> => {
@@ -207,6 +244,7 @@ export const useStore = create<State & Actions>((set, get) => {
     try {
       const { aoUsed } = await engine.bakeLivery({
         baseColor: draft.baseColor,
+        baseFinish: draft.baseFinish ?? 'stock',
         aoSource: draft.aoSource,
         aoStrength: draft.aoStrength,
         textures: get().paintedTextures(),
@@ -215,6 +253,8 @@ export const useStore = create<State & Actions>((set, get) => {
         cleared: draft.clearedTextures ?? [],
       })
       set({ aoStatus: 'ready', aoUsed })
+      const maps = engine.mapsTextures(get().paintedTextures())
+      if (maps.join('|') !== get().finishMaps.join('|')) set({ finishMaps: maps })
       refreshOutline()
       if (get().highlight) engine.highlightTextures(get().paintedTextures())
     } catch (err) {
@@ -254,7 +294,7 @@ export const useStore = create<State & Actions>((set, get) => {
     lastHistoryAt = now
     const { draft, past } = get()
     set({
-      past: [...past, { baseColor: draft.baseColor, design: draft.design }].slice(-100),
+      past: [...past, snapshot(draft)].slice(-100),
       future: [],
     })
   }
@@ -290,6 +330,35 @@ export const useStore = create<State & Actions>((set, get) => {
     const design = get().draft.design
     set({ selectedLayer: layer.id })
     setDesign({ ...design, layers: [...design.layers, layer] })
+  }
+
+  const markClean = (): void => {
+    cleanDraft = get().draft
+    set({ dirty: false })
+  }
+
+  /** Puts a draft from a project, the autosave or a skin into the editor. */
+  const applyLoadedDraft = async (raw: unknown, carId: string | null): Promise<void> => {
+    let draft = normalizeDraft(raw)
+    const { car, cars } = get()
+    if (carId && carId !== car?.id && cars.some((c) => c.id === carId)) {
+      await get().selectCar(carId)
+    }
+    // texture choices only make sense on the car they were made for
+    if (carId && carId !== get().car?.id) {
+      draft = { ...draft, liveryTextures: 'auto', baseSkin: 'auto', clearedTextures: [] }
+    }
+    set({
+      draft,
+      selectedLayer: null,
+      past: [],
+      future: [],
+      exportState: { status: 'idle' },
+      projectError: null,
+    })
+    if (get().car) get().setTab('livery')
+    refreshOutline()
+    void rebake()
   }
 
   const addAsset = (id: string, asset: Asset): void => {
@@ -332,11 +401,23 @@ export const useStore = create<State & Actions>((set, get) => {
     future: [],
     designError: null,
     selectedOffPaint: false,
+    finishMaps: [],
+    projectPath: null,
+    dirty: false,
+    recovery: null,
+    projectError: null,
 
     async init() {
       const settings = await get().backend.getSettings()
       await i18n.changeLanguage(settings.language)
-      set({ settings })
+      set({
+        settings,
+        recovery: parseAutosave(
+          await get()
+            .backend.readAutosave()
+            .catch(() => null),
+        ),
+      })
       if (settings.acRoot) await get().loadCars()
     },
 
@@ -470,15 +551,18 @@ export const useStore = create<State & Actions>((set, get) => {
         )
         const marker = asRecord(parseLenientJson(new TextDecoder().decode(bytes)))
         const project = asRecord(marker.project)
-        const draft = { ...DEFAULT_DRAFT, ...(project.draft as Partial<LiveryDraft>) }
+        const draft = normalizeDraft(project.draft)
         set({
-          draft: { ...draft, design: draft.design ?? EMPTY_DESIGN, skinId, skinIdTouched: true },
+          draft: { ...draft, skinId, skinIdTouched: true },
           tab: 'livery',
           exportState: { status: 'idle' },
           selectedLayer: null,
           past: [],
           future: [],
+          projectPath: null,
         })
+        markClean()
+        refreshOutline()
         void rebake()
       } catch (err) {
         console.error(err)
@@ -487,6 +571,7 @@ export const useStore = create<State & Actions>((set, get) => {
 
     updateDraft(patch) {
       if (patch.baseColor !== undefined) pushHistory('baseColor')
+      if (patch.baseFinish !== undefined) pushHistory()
       const prev = get().draft
       const meta = { ...prev.meta, ...patch.meta }
       const next: LiveryDraft = { ...prev, ...patch, meta }
@@ -497,6 +582,7 @@ export const useStore = create<State & Actions>((set, get) => {
       set({ draft: next, exportState: { status: 'idle' } })
       if (
         patch.baseColor !== undefined ||
+        patch.baseFinish !== undefined ||
         patch.aoSource !== undefined ||
         patch.aoStrength !== undefined ||
         patch.liveryTextures !== undefined ||
@@ -561,6 +647,8 @@ export const useStore = create<State & Actions>((set, get) => {
           set({ exportState: { status: 'error', message: result.message } })
           return
         }
+        markClean()
+        void backend.writeAutosave(null)
         const updated = await backend.getCar(car.id)
         engine.updateCarDetails(updated)
         set({
@@ -769,8 +857,8 @@ export const useStore = create<State & Actions>((set, get) => {
       lastHistoryTag = null
       set({
         past: past.slice(0, -1),
-        future: [{ baseColor: draft.baseColor, design: draft.design }, ...future],
-        draft: { ...draft, baseColor: prev.baseColor, design: prev.design },
+        future: [snapshot(draft), ...future],
+        draft: { ...draft, ...prev },
       })
       if (!prev.design.layers.some((l) => l.id === get().selectedLayer))
         set({ selectedLayer: null })
@@ -784,14 +872,67 @@ export const useStore = create<State & Actions>((set, get) => {
       if (!next) return
       lastHistoryTag = null
       set({
-        past: [...past, { baseColor: draft.baseColor, design: draft.design }],
+        past: [...past, snapshot(draft)],
         future: future.slice(1),
-        draft: { ...draft, baseColor: next.baseColor, design: next.design },
+        draft: { ...draft, ...next },
       })
       if (!next.design.layers.some((l) => l.id === get().selectedLayer))
         set({ selectedLayer: null })
       refreshOutline()
       void rebake()
+    },
+
+    async saveProject(saveAs = false) {
+      const { draft, car, projectPath, backend } = get()
+      try {
+        const bytes = packProject({ carId: car?.id ?? null, draft })
+        const path = await backend.saveProject(bytes, {
+          path: saveAs ? undefined : (projectPath ?? undefined),
+          suggestedName: projectFileName(draft.meta.skinname),
+        })
+        if (!path) return
+        set({ projectPath: path, projectError: null })
+        markClean()
+        await backend.writeAutosave(null)
+      } catch (err) {
+        console.error(err)
+        set({ projectError: err instanceof Error ? err.message : String(err) })
+      }
+    },
+
+    async openProject() {
+      const { backend, dirty } = get()
+      if (dirty && !window.confirm(i18n.t('project.discardChanges'))) return
+      try {
+        const file = await backend.openProject()
+        if (!file) return
+        const doc = unpackProject(file.bytes)
+        await applyLoadedDraft(doc.draft, doc.carId)
+        set({ projectPath: file.path, recovery: null })
+        markClean()
+        await backend.writeAutosave(null)
+      } catch (err) {
+        console.error(err)
+        set({ projectError: err instanceof Error ? err.message : String(err) })
+      }
+    },
+
+    async restoreRecovery() {
+      const recovery = get().recovery
+      if (!recovery) return
+      set({ recovery: null })
+      await applyLoadedDraft(recovery.draft, recovery.carId)
+      // still unsaved: it stays dirty and keeps being autosaved
+      set({ projectPath: recovery.projectPath })
+    },
+
+    discardRecovery() {
+      set({ recovery: null })
+      if (!get().dirty) void get().backend.writeAutosave(null)
+    },
+
+    dismissProjectError() {
+      set({ projectError: null })
     },
 
     attachEngine(controller) {
@@ -868,6 +1009,64 @@ export const useStore = create<State & Actions>((set, get) => {
     },
   }
 })
+
+// Autosave: shortly after the draft changes, unsaved work goes to the
+// backend's autosave slot so a crash or a closed window does not lose it.
+let autosaveTimer: ReturnType<typeof setTimeout> | null = null
+
+useStore.subscribe((state, prev) => {
+  if (state.draft === prev.draft) return
+  const dirty = state.draft !== cleanDraft
+  if (dirty !== state.dirty) useStore.setState({ dirty })
+  if (!dirty) return
+  if (autosaveTimer) clearTimeout(autosaveTimer)
+  autosaveTimer = setTimeout(() => {
+    autosaveTimer = null
+    const st = useStore.getState()
+    if (!st.dirty) return
+    const data = JSON.stringify({
+      app: 'AC Livery',
+      kind: 'autosave',
+      version: 1,
+      savedAt: Date.now(),
+      carId: st.car?.id ?? null,
+      projectPath: st.projectPath,
+      draft: st.draft,
+    })
+    st.backend.writeAutosave(data).catch((err) => console.error(err))
+  }, AUTOSAVE_DELAY)
+})
+
+function parseAutosave(raw: string | null): Recovery | null {
+  if (!raw) return null
+  try {
+    const data = asRecord(JSON.parse(raw))
+    if (data.kind !== 'autosave') return null
+    return {
+      savedAt: typeof data.savedAt === 'number' ? data.savedAt : 0,
+      carId: typeof data.carId === 'string' ? data.carId : null,
+      projectPath: typeof data.projectPath === 'string' ? data.projectPath : null,
+      draft: normalizeDraft(data.draft),
+    }
+  } catch {
+    return null
+  }
+}
+
+/** Fills a stored draft (older versions may lack fields) up to the current shape. */
+export function normalizeDraft(raw: unknown): LiveryDraft {
+  const stored = asRecord(raw) as Partial<LiveryDraft>
+  const design = asRecord(stored.design) as Partial<Design>
+  return {
+    ...DEFAULT_DRAFT,
+    ...stored,
+    meta: { ...DEFAULT_DRAFT.meta, ...asRecord(stored.meta) },
+    design: {
+      layers: Array.isArray(design.layers) ? design.layers : [],
+      assets: asRecord(design.assets) as Design['assets'],
+    },
+  }
+}
 
 /** Textures repainted for a draft: an explicit choice, or the automatic pick. */
 export function resolvePaintedTextures(

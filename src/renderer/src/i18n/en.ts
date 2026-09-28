@@ -4,6 +4,20 @@ type Shape<T> = { [K in keyof T]: T[K] extends string ? string : Shape<T[K]> }
 
 export const en: Shape<typeof ru> = {
   app: { title: 'AC Livery' },
+  project: {
+    open: 'Open project…',
+    openHint: 'Open an .aclivery project file (Ctrl+O)',
+    save: 'Save project',
+    saveHint: 'Save the design to an .aclivery file (Ctrl+S; Shift: save as)',
+    untitled: 'New project',
+    unsaved: 'unsaved',
+    recovery: 'Unsaved work from {{time}} was found (car: {{car}}).',
+    restore: 'Restore',
+    discard: 'Discard',
+    close: 'Close',
+    discardChanges: 'Your unsaved changes will be lost. Open another project?',
+    error: 'Project: {{message}}',
+  },
   setup: {
     title: 'Where is Assetto Corsa installed?',
     text: 'Pick the game folder that contains content/cars, usually …\\steamapps\\common\\assettocorsa.',
@@ -96,6 +110,18 @@ export const en: Shape<typeof ru> = {
       'texconv.exe not found: the texture was saved with the built-in encoder (slightly lower BC1/BC3 quality).',
   },
   design: {
+    finish: 'Finish',
+    baseFinish: 'Base finish',
+    noFinishMaps:
+      'The repainted texture of this car has no material map (txMaps), so finishes have no visible effect.',
+    finishes: {
+      stock: 'Stock',
+      base: 'Same as base',
+      gloss: 'Gloss',
+      satin: 'Satin',
+      matte: 'Matte',
+      metallic: 'Metallic',
+    },
     offPaint:
       'This vinyl does not reach any repainted surface, so it is not visible. Drag it onto the body or tick the right texture on the Base panel.',
     add: 'Add',

@@ -16,7 +16,14 @@ import { canDecodeOnCpu, decodeDdsMip, isDds, parseDds } from '@shared/formats/d
 import { aoSourceScore } from '@shared/image/ao'
 import { LiveryBaker, readTexture, uvCoverage, type BakeLayer, type BakeMesh } from './baker'
 import { hitsProjector, placeAt, projectors, type Frame } from '@shared/design/placement'
-import type { Design, Layer, Placement } from '@shared/design/types'
+import {
+  FINISH_MAPS,
+  type BaseFinish,
+  type Design,
+  type Layer,
+  type LayerFinish,
+  type Placement,
+} from '@shared/design/types'
 import { rasterize, rasterKey } from './vinyl'
 import { extractAoInWorker } from './aoWorker'
 import { parseCarInWorker } from './loadCar'
@@ -28,6 +35,7 @@ export type AoSource = string
 
 export interface LiveryParams {
   baseColor: string
+  baseFinish: BaseFinish
   aoSource: AoSource
   aoStrength: number
   /** Texture names to repaint. */
@@ -95,6 +103,8 @@ export class EngineController {
   private readonly autoAoPick = new Map<string, AoSource>()
   private candidates: LiveryCandidate[] | null = null
   private painted: string[] = []
+  /** Material maps (txMaps) rewritten for finishes. */
+  private bakedMaps: string[] = []
   private cleared: string[] = []
   private readonly vinyls = new Map<string, { key: string; texture: THREE.CanvasTexture }>()
   private baseSkin: string | null = null
@@ -155,6 +165,7 @@ export class EngineController {
     this.autoAoPick.clear()
     this.candidates = null
     this.painted = []
+    this.bakedMaps = []
     this.baseSkin = null
     this.lastSkinStatus = []
     this.liveryActive = false
@@ -256,18 +267,54 @@ export class EngineController {
 
   private bakeMeshes(texture: string): BakeMesh[] {
     const key = texture.toLowerCase()
+    return this.meshesWhere((sampler) => sampler('txDiffuse') === key)
+  }
+
+  /** Meshes sampling `maps` as their material map on top of a repainted diffuse texture. */
+  private mapsMeshes(maps: string, painted: string[]): BakeMesh[] {
+    const key = maps.toLowerCase()
+    const diffuse = new Set(painted.map((t) => t.toLowerCase()))
+    return this.meshesWhere(
+      (sampler) => sampler('txMaps') === key && diffuse.has(sampler('txDiffuse') ?? ''),
+    )
+  }
+
+  private meshesWhere(
+    test: (sampler: (name: string) => string | undefined) => boolean,
+  ): BakeMesh[] {
     const car = this.viewer.loadedCar
     if (!car) return []
     return (
       this.viewer.carMeshes
         .filter(({ source }) => {
           const mat = car.materials[source.materialId]
-          const diffuse = mat?.textures.find((t) => t.name === 'txDiffuse')?.texture
-          return diffuse?.toLowerCase() === key
+          if (!mat) return false
+          const sampler = (name: string) =>
+            mat.textures.find((t) => t.name === name)?.texture.toLowerCase()
+          return test(sampler)
         })
         // display space: vinyls are placed where the user sees them
         .map(({ mesh }) => ({ geometry: mesh.geometry, world: mesh.matrixWorld.clone() }))
     )
+  }
+
+  /**
+   * Material maps (txMaps) of the repainted textures: finishes are written
+   * there. Only multimap shaders read them.
+   */
+  mapsTextures(painted: string[]): string[] {
+    const car = this.viewer.loadedCar
+    if (!car) return []
+    const diffuse = new Set(painted.map((t) => t.toLowerCase()))
+    const out = new Map<string, string>()
+    for (const mat of car.materials) {
+      if (!mat.shader.toLowerCase().includes('multimap')) continue
+      const d = mat.textures.find((t) => t.name === 'txDiffuse')?.texture
+      const m = mat.textures.find((t) => t.name === 'txMaps')?.texture
+      if (!d || !m || !diffuse.has(d.toLowerCase()) || diffuse.has(m.toLowerCase())) continue
+      if (this.viewer.modelTexture(m)) out.set(m.toLowerCase(), m)
+    }
+    return [...out.values()]
   }
 
   /** Candidate AO sources for a texture: the model plus every stock skin that has it. */
@@ -417,6 +464,30 @@ export class EngineController {
       })
       baked.set(name.toLowerCase(), texture)
     }
+    // finishes: rewrite the material maps of the repainted textures
+    const finishing = params.baseFinish !== 'stock' || layers.some((l) => l.finish !== 'base')
+    const maps = finishing ? this.mapsTextures(textures) : []
+    const baseMaps = params.baseFinish === 'stock' ? null : FINISH_MAPS[params.baseFinish]
+    const mapLayers = layers
+      .filter((l) => l.finish !== 'base')
+      .map((l) => ({ ...l, flatColor: FINISH_MAPS[l.finish as Exclude<LayerFinish, 'base'>] }))
+    for (const name of maps) {
+      const sourceInfo =
+        (params.baseSkin
+          ? await this.skinTexture(params.baseSkin, name).catch(() => null)
+          : null) ?? this.viewer.modelTexture(name)
+      const texture = this.baker.bake(name.toLowerCase(), this.mapsMeshes(name, textures), {
+        ...this.liveryTextureSize(name, sourceInfo),
+        baseColor: baseMaps ?? [1, 1, 1],
+        baseFromSource: !baseMaps,
+        fillFromSource: true,
+        ao: null,
+        aoStrength: 0,
+        alphaSource: sourceInfo?.texture ?? null,
+        layers: mapLayers,
+      })
+      baked.set(name.toLowerCase(), texture)
+    }
     this.baker.keepOnly(baked.keys())
 
     // load the base skin before touching the view to avoid flicker
@@ -434,8 +505,10 @@ export class EngineController {
     this.viewer.clearOverrides()
     for (const [name, texture] of base) this.viewer.setOverride(name, texture)
     for (const name of cleared) this.viewer.setOverride(name, TRANSPARENT)
-    for (const name of textures) this.viewer.setOverride(name, baked.get(name.toLowerCase())!)
+    for (const name of [...textures, ...maps])
+      this.viewer.setOverride(name, baked.get(name.toLowerCase())!)
     this.painted = textures
+    this.bakedMaps = maps
     this.setPaintFilter(textures)
     this.cleared = cleared
     this.baseSkin = params.baseSkin
@@ -503,7 +576,7 @@ export class EngineController {
   }
 
   /** Rasterizes changed layers and returns the visible ones, bottom first. */
-  private async prepareLayers(design: Design): Promise<BakeLayer[]> {
+  private async prepareLayers(design: Design): Promise<(BakeLayer & { finish: LayerFinish })[]> {
     const frame = this.displayFrame()
     if (!frame) return []
     const live = new Set(design.layers.map((l) => l.id))
@@ -513,7 +586,7 @@ export class EngineController {
         this.vinyls.delete(id)
       }
     }
-    const out: BakeLayer[] = []
+    const out: (BakeLayer & { finish: LayerFinish })[] = []
     for (const layer of design.layers) {
       if (!layer.visible || layer.opacity <= 0) continue
       const texture = await this.vinylTexture(layer, design).catch((err) => {
@@ -521,7 +594,12 @@ export class EngineController {
         return null
       })
       if (!texture) continue
-      out.push({ texture, projectors: projectors(frame, layer.placement), opacity: layer.opacity })
+      out.push({
+        texture,
+        projectors: projectors(frame, layer.placement),
+        opacity: layer.opacity,
+        finish: layer.finish ?? 'base',
+      })
     }
     return out
   }
@@ -597,7 +675,7 @@ export class EngineController {
     copyFiles?: { fromSkin: string; files: string[] }
   } {
     if (!this.liveryActive || !this.analysis) return { textures: [] }
-    const textures: ExportTexture[] = this.painted.map((name) => ({
+    const textures: ExportTexture[] = [...this.painted, ...this.bakedMaps].map((name) => ({
       name,
       ...this.baker.readPixels(name.toLowerCase()),
     }))

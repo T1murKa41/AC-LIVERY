@@ -1,6 +1,7 @@
 // Draws vinyl layers (shapes, text, images) into canvases that become the
 // textures of their projectors.
 
+import { dataUrlToBytes } from '@shared/design/project'
 import {
   fontAssetId,
   type Asset,
@@ -225,18 +226,6 @@ export async function rasterize(
     }
   }
   return canvas
-}
-
-/** Decodes a base64 data: URL without fetch() (blocked for data: by the app's CSP). */
-export function dataUrlToBytes(url: string): Uint8Array<ArrayBuffer> {
-  const comma = url.indexOf(',')
-  const meta = url.slice(0, comma)
-  const payload = url.slice(comma + 1)
-  if (!meta.endsWith(';base64')) return new TextEncoder().encode(decodeURIComponent(payload))
-  const bin = atob(payload)
-  const out = new Uint8Array(bin.length)
-  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i)
-  return out
 }
 
 /** Reads a file into a data: URL. */

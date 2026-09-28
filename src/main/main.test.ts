@@ -9,6 +9,13 @@ import { parseRegValue } from './acRoot'
 import { getCar, listCars } from './cars'
 import { exportSkin, skinStatus, type Encoders } from './exportSkin'
 import { resolveInside } from './paths'
+import {
+  ProjectPaths,
+  readAutosave,
+  withProjectExtension,
+  writeAtomic,
+  writeAutosave,
+} from './projects'
 import { builtinDdsEncoder } from './texconv'
 
 let root: string
@@ -202,5 +209,42 @@ describe('registry output', () => {
       '\r\nHKEY_CURRENT_USER\\Software\\Valve\\Steam\r\n    SteamPath    REG_SZ    c:/program files (x86)/steam\r\n'
     expect(parseRegValue(out, 'SteamPath')).toBe('c:/program files (x86)/steam')
     expect(parseRegValue(out, 'Missing')).toBeNull()
+  })
+})
+
+describe('projects', () => {
+  let dir: string
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'aclivery-projects-'))
+  })
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true })
+  })
+
+  it('adds the extension once', () => {
+    expect(withProjectExtension('C:/x/gulf')).toBe('C:/x/gulf.aclivery')
+    expect(withProjectExtension('C:/x/gulf.ACLIVERY')).toBe('C:/x/gulf.ACLIVERY')
+  })
+
+  it('only allows paths picked in a dialog', () => {
+    const paths = new ProjectPaths()
+    const picked = paths.allow(join(dir, 'a.aclivery'))
+    expect(paths.isAllowed(picked)).toBe(true)
+    expect(paths.isAllowed(join(dir, 'b.aclivery'))).toBe(false)
+    expect(paths.isAllowed(join(dir, 'sub', '..', 'a.aclivery'))).toBe(true)
+  })
+
+  it('writes files atomically and keeps one autosave', async () => {
+    const file = join(dir, 'nested', 'p.aclivery')
+    await writeAtomic(file, new Uint8Array([1, 2, 3]))
+    expect([...(await readFile(file))]).toEqual([1, 2, 3])
+    expect(await readdir(join(dir, 'nested'))).toEqual(['p.aclivery'])
+
+    const autosave = join(dir, 'autosave.json')
+    expect(await readAutosave(autosave)).toBeNull()
+    await writeAutosave(autosave, '{"a":1}')
+    expect(await readAutosave(autosave)).toBe('{"a":1}')
+    await writeAutosave(autosave, null)
+    expect(await readAutosave(autosave)).toBeNull()
   })
 })

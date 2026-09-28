@@ -18,6 +18,10 @@ export function createElectronBackend(api: ElectronApi): Backend {
     checkSkin: (carId, skinId) => api.checkSkin(carId, skinId),
     exportSkin: (request) => api.exportSkin(request),
     revealPath: (relPath) => api.revealPath(relPath),
+    saveProject: (bytes, options) => api.saveProject(bytes, options),
+    openProject: () => api.openProject(),
+    readAutosave: () => api.readAutosave(),
+    writeAutosave: (data) => api.writeAutosave(data),
     async readFile(relPath) {
       const res = await fetch(gameFileUrl(relPath))
       if (!res.ok) throw new Error(`Cannot read ${relPath} (${res.status})`)

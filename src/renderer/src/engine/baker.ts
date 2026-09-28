@@ -33,6 +33,8 @@ export interface BakeLayer {
   /** One projector, or two when the vinyl is mirrored to the other side. */
   projectors: BakeProjector[]
   opacity: number
+  /** Draw this colour through the vinyl's alpha instead of its pixels (material maps). */
+  flatColor?: [number, number, number]
 }
 
 export interface BakeSettings {
@@ -43,6 +45,10 @@ export interface BakeSettings {
   aoStrength: number
   /** Original texture; its alpha channel is kept. */
   alphaSource: THREE.Texture | null
+  /** Start from the original texture instead of the base colour. */
+  baseFromSource?: boolean
+  /** Texels no mesh covers keep the original texture instead of the base colour. */
+  fillFromSource?: boolean
   /** Vinyls, bottom first. */
   layers?: BakeLayer[]
 }
@@ -64,11 +70,14 @@ void main() {
 
 const DESIGN_FRAGMENT = /* glsl */ `
 uniform vec3 baseColor;
+uniform sampler2D source;
+uniform bool useSource;
 varying vec2 vUv;
 varying vec3 vWorldPos;
 varying vec3 vWorldNormal;
 void main() {
-  gl_FragColor = vec4(baseColor, 1.0);
+  vec3 original = texture2D(source, vUv).rgb;
+  gl_FragColor = vec4(useSource ? original : baseColor, 1.0);
 }
 `
 
@@ -78,6 +87,8 @@ void main() {
 const LAYER_FRAGMENT = /* glsl */ `
 uniform sampler2D vinyl;
 uniform float opacity;
+uniform bool useFlat;
+uniform vec3 flatColor;
 uniform int count;
 uniform vec3 origin[2];
 uniform vec3 axisS[2];
@@ -109,6 +120,7 @@ void main() {
   vec4 m = project(origin[1], axisS[1], axisT[1], axisR[1]);
   m.a *= step(1.5, float(count));
   c = m.a > c.a ? m : c;
+  if (useFlat) c.rgb = flatColor;
   c.a *= opacity;
   if (c.a <= 0.0) discard;
   gl_FragColor = c;
@@ -150,19 +162,28 @@ uniform sampler2D ao;
 uniform sampler2D alphaSource;
 uniform bool hasAo;
 uniform bool hasAlpha;
+uniform bool fillFromSource;
 uniform float aoStrength;
 uniform vec3 fillColor;
 varying vec2 vUv;
 void main() {
   vec4 c = texture2D(src, vUv);
-  vec3 color = c.a > 0.5 ? c.rgb : fillColor;
+  vec4 original = texture2D(alphaSource, vUv);
+  vec3 fill = fillFromSource && hasAlpha ? original.rgb : fillColor;
+  vec3 color = c.a > 0.5 ? c.rgb : fill;
   if (hasAo) color *= mix(1.0, texture2D(ao, vUv).r, aoStrength);
-  float alpha = hasAlpha ? texture2D(alphaSource, vUv).a : 1.0;
-  gl_FragColor = vec4(color, alpha);
+  gl_FragColor = vec4(color, hasAlpha ? original.a : 1.0);
 }
 `
 
 const DILATE_PASSES = 8
+
+/** Bound to samplers that have nothing to sample, so every sampler is valid. */
+const WHITE = (() => {
+  const t = new THREE.DataTexture(new Uint8Array([255, 255, 255, 255]), 1, 1)
+  t.needsUpdate = true
+  return t
+})()
 const MAX_UV_TILES = 64
 
 /**
@@ -258,6 +279,8 @@ export class LiveryBaker {
         world: { value: new THREE.Matrix4() },
         uvOffset: { value: new THREE.Vector2() },
         baseColor: { value: new THREE.Vector3() },
+        source: { value: null },
+        useSource: { value: false },
       },
       side: THREE.DoubleSide,
       depthTest: false,
@@ -272,6 +295,8 @@ export class LiveryBaker {
         uvOffset: { value: new THREE.Vector2() },
         vinyl: { value: null },
         opacity: { value: 1 },
+        useFlat: { value: false },
+        flatColor: { value: new THREE.Vector3() },
         count: { value: 1 },
         origin: { value: vec3s() },
         axisS: { value: vec3s() },
@@ -306,6 +331,7 @@ export class LiveryBaker {
         alphaSource: { value: null },
         hasAo: { value: false },
         hasAlpha: { value: false },
+        fillFromSource: { value: false },
         aoStrength: { value: 1 },
         fillColor: { value: new THREE.Vector3() },
       },
@@ -365,7 +391,10 @@ export class LiveryBaker {
     r.setClearColor(0x000000, 0)
     r.clear(true, false, false)
     r.autoClear = false
-    this.designMaterial.uniforms.baseColor!.value.set(...settings.baseColor)
+    const du = this.designMaterial.uniforms
+    du.baseColor!.value.set(...settings.baseColor)
+    du.useSource!.value = !!settings.baseFromSource && !!settings.alphaSource
+    du.source!.value = settings.alphaSource ?? WHITE
     drawMeshes(r, meshes, this.designMaterial, this.camera)
 
     // 1b. vinyls, bottom to top, blended over the base colour
@@ -374,6 +403,8 @@ export class LiveryBaker {
       if (!layer.projectors.length || layer.opacity <= 0) continue
       lu.vinyl!.value = layer.texture
       lu.opacity!.value = layer.opacity
+      lu.useFlat!.value = !!layer.flatColor
+      if (layer.flatColor) lu.flatColor!.value.set(...layer.flatColor)
       lu.count!.value = Math.min(2, layer.projectors.length)
       // the second slot always holds valid vectors (a copy when unused)
       const pair = [layer.projectors[0]!, layer.projectors[1] ?? layer.projectors[0]!]
@@ -401,11 +432,12 @@ export class LiveryBaker {
     // 3. final composite into the mipmapped output
     const u = this.finalMaterial.uniforms
     u.src!.value = src.texture
-    u.ao!.value = settings.ao
+    u.ao!.value = settings.ao ?? WHITE
     u.hasAo!.value = !!settings.ao && settings.aoStrength > 0
     u.aoStrength!.value = settings.aoStrength
-    u.alphaSource!.value = settings.alphaSource
+    u.alphaSource!.value = settings.alphaSource ?? WHITE
     u.hasAlpha!.value = !!settings.alphaSource
+    u.fillFromSource!.value = !!settings.fillFromSource
     u.fillColor!.value.set(...settings.baseColor)
     this.quad.material = this.finalMaterial
     r.setRenderTarget(output)

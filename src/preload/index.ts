@@ -12,6 +12,10 @@ const api: ElectronApi = {
   checkSkin: (carId, skinId) => ipcRenderer.invoke('skin:check', carId, skinId),
   exportSkin: (request) => ipcRenderer.invoke('skin:export', request),
   revealPath: (relPath) => ipcRenderer.invoke('shell:reveal', relPath),
+  saveProject: (bytes, options) => ipcRenderer.invoke('project:save', bytes, options),
+  openProject: () => ipcRenderer.invoke('project:open'),
+  readAutosave: () => ipcRenderer.invoke('autosave:read'),
+  writeAutosave: (data) => ipcRenderer.invoke('autosave:write', data),
 }
 
 contextBridge.exposeInMainWorld('aclivery', api)

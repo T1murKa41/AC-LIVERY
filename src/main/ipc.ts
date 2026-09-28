@@ -1,10 +1,19 @@
 import { app, BrowserWindow, dialog, ipcMain, nativeImage, shell } from 'electron'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import type { ExportRequest, Language } from '@shared/api'
+import { PROJECT_EXTENSION } from '@shared/design/project'
 import { detectAcRoot, isAcRoot } from './acRoot'
 import { getCar, listCars } from './cars'
 import { exportSkin, skinStatus, type Encoders } from './exportSkin'
 import { resolveInside } from './paths'
+import {
+  ProjectPaths,
+  readAutosave,
+  readProjectFile,
+  withProjectExtension,
+  writeAtomic,
+  writeAutosave,
+} from './projects'
 import type { SettingsStore } from './settings'
 import { pickDdsEncoder } from './texconv'
 
@@ -76,4 +85,43 @@ export function registerIpc(settings: SettingsStore): void {
     const abs = resolveInside(await requireRoot(), relPath)
     if (abs) shell.showItemInFolder(abs)
   })
+
+  const projects = new ProjectPaths()
+  const filters = [{ name: 'AC Livery', extensions: [PROJECT_EXTENSION] }]
+  ipcMain.handle(
+    'project:save',
+    async (e, bytes: Uint8Array, options: { path?: string; suggestedName: string }) => {
+      let target = options.path && projects.isAllowed(options.path) ? options.path : null
+      if (!target) {
+        const win = BrowserWindow.fromWebContents(e.sender)
+        const dialogOptions = {
+          defaultPath: join(app.getPath('documents'), basename(options.suggestedName)),
+          filters,
+        }
+        const result = win
+          ? await dialog.showSaveDialog(win, dialogOptions)
+          : await dialog.showSaveDialog(dialogOptions)
+        if (result.canceled || !result.filePath) return null
+        target = projects.allow(withProjectExtension(result.filePath))
+      }
+      await writeAtomic(target, bytes)
+      return target
+    },
+  )
+  ipcMain.handle('project:open', async (e) => {
+    const win = BrowserWindow.fromWebContents(e.sender)
+    const dialogOptions = { properties: ['openFile' as const], filters }
+    const result = win
+      ? await dialog.showOpenDialog(win, dialogOptions)
+      : await dialog.showOpenDialog(dialogOptions)
+    const picked = result.canceled ? null : result.filePaths[0]
+    if (!picked) return null
+    const path = projects.allow(picked)
+    return { path, bytes: await readProjectFile(path) }
+  })
+  const autosaveFile = join(app.getPath('userData'), 'autosave.json')
+  ipcMain.handle('autosave:read', () => readAutosave(autosaveFile))
+  ipcMain.handle('autosave:write', (_e, data: string | null) =>
+    writeAutosave(autosaveFile, typeof data === 'string' ? data : null),
+  )
 }

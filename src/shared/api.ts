@@ -78,6 +78,12 @@ export interface SkinStatus {
   ours: boolean
 }
 
+export interface ProjectFile {
+  /** Where the project lives (an absolute path in the desktop app). */
+  path: string
+  bytes: Uint8Array
+}
+
 export interface Backend {
   readonly kind: 'electron' | 'mock'
   getSettings(): Promise<AppSettings>
@@ -93,6 +99,21 @@ export interface Backend {
   checkSkin(carId: string, skinId: string): Promise<SkinStatus>
   exportSkin(request: ExportRequest): Promise<ExportResult>
   revealPath(relPath: string): Promise<void>
+  /**
+   * Writes a project file and returns its path, or null when cancelled.
+   * Asks where to save unless `path` is a project opened or saved earlier in
+   * this session.
+   */
+  saveProject(
+    bytes: Uint8Array,
+    options: { path?: string; suggestedName: string },
+  ): Promise<string | null>
+  /** Lets the user pick a project file; null when cancelled. */
+  openProject(): Promise<ProjectFile | null>
+  /** Unsaved work kept across sessions (one slot); null when there is none. */
+  readAutosave(): Promise<string | null>
+  /** Replaces the autosave; null deletes it. */
+  writeAutosave(data: string | null): Promise<void>
 }
 
 export const SKIN_MARKER_FILE = '.aclivery.json'
