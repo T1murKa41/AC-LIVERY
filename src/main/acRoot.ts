@@ -70,7 +70,8 @@ export async function candidateRoots(): Promise<string[]> {
     'C:\\Program Files (x86)\\Steam',
   ].filter((p): p is string => !!p)
   for (const steam of steamPaths) {
-    for (const lib of await libraryFolders(steam)) out.push(join(lib, 'steamapps', 'common', 'assettocorsa'))
+    for (const lib of await libraryFolders(steam))
+      out.push(join(lib, 'steamapps', 'common', 'assettocorsa'))
   }
   return [...new Set(out)]
 }

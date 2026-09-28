@@ -6,7 +6,7 @@ export function resolveInside(root: string, relPath: string): string | null {
   if (cleaned.split('/').some((part) => part === '..')) return null
   const abs = resolve(root, ...cleaned.split('/').filter(Boolean))
   const rel = relative(resolve(root), abs)
-  if (rel === '' ) return abs
+  if (rel === '') return abs
   if (rel.startsWith('..') || isAbsolute(rel) || rel.split(sep).includes('..')) return null
   return abs
 }
@@ -18,6 +18,7 @@ export function isSafeSegment(name: string): boolean {
     name.length <= 255 &&
     name !== '.' &&
     name !== '..' &&
-    !/[\\/:*?"<>|\u0000-\u001f]/.test(name)
+    !/[\\/:*?"<>|]/.test(name) &&
+    ![...name].some((ch) => ch.charCodeAt(0) < 0x20)
   )
 }

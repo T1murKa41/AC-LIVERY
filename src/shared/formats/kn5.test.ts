@@ -11,7 +11,11 @@ describe('kn5', () => {
     const kn5 = parseKn5(car.kn5)
     expect(kn5.version).toBe(6)
     expect(kn5.textures.map((t) => t.name)).toContain(BODY_TEXTURE)
-    expect(kn5.materials.map((m) => m.shader)).toEqual(['ksPerPixelMultiMap', 'ksPerPixel', 'ksPerPixel'])
+    expect(kn5.materials.map((m) => m.shader)).toEqual([
+      'ksPerPixelMultiMap',
+      'ksPerPixel',
+      'ksPerPixel',
+    ])
     const names: string[] = []
     walkKn5(kn5.root, (n) => names.push(n.name))
     expect(names).toEqual(expect.arrayContaining(['BODY_PAINT', 'WHEEL_LF', 'WHEEL_RR_RIM']))

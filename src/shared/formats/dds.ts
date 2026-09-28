@@ -46,7 +46,9 @@ const DDPF_LUMINANCE = 0x20000
 const DDSCAPS2_CUBEMAP = 0x200
 
 function fourCC(s: string): number {
-  return s.charCodeAt(0) | (s.charCodeAt(1) << 8) | (s.charCodeAt(2) << 16) | (s.charCodeAt(3) << 24)
+  return (
+    s.charCodeAt(0) | (s.charCodeAt(1) << 8) | (s.charCodeAt(2) << 16) | (s.charCodeAt(3) << 24)
+  )
 }
 
 const FOURCC_FORMATS: Record<number, DdsFormat> = {
@@ -109,7 +111,9 @@ export function bytesPerPixel(format: DdsFormat): number {
 
 export function mipByteSize(format: DdsFormat, width: number, height: number): number {
   if (isBlockCompressed(format)) {
-    return Math.max(1, Math.ceil(width / 4)) * Math.max(1, Math.ceil(height / 4)) * blockBytes(format)
+    return (
+      Math.max(1, Math.ceil(width / 4)) * Math.max(1, Math.ceil(height / 4)) * blockBytes(format)
+    )
   }
   return width * height * bytesPerPixel(format)
 }
@@ -309,12 +313,7 @@ function decodeColorBlock(
 }
 
 /** Decodes a BC4 single-channel block into 16 values written with the given stride. */
-function decodeAlphaBlock(
-  data: Uint8Array,
-  o: number,
-  pixels: Uint8Array,
-  channel: number,
-): void {
+function decodeAlphaBlock(data: Uint8Array, o: number, pixels: Uint8Array, channel: number): void {
   const a0 = data[o]!
   const a1 = data[o + 1]!
   const pal = [a0, a1, 0, 0, 0, 0, 0, 0]
@@ -448,7 +447,9 @@ export function buildMipChain(rgba: Uint8Array, width: number, height: number): 
 
 function pack565(r: number, g: number, b: number): number {
   return (
-    (Math.round((r * 31) / 255) << 11) | (Math.round((g * 63) / 255) << 5) | Math.round((b * 31) / 255)
+    (Math.round((r * 31) / 255) << 11) |
+    (Math.round((g * 63) / 255) << 5) |
+    Math.round((b * 31) / 255)
   )
 }
 
@@ -585,7 +586,12 @@ function encodeAlphaBlock(px: Uint8Array, out: Uint8Array, o: number): void {
 }
 
 /** Encodes RGBA8 into BC1 (no alpha) or BC3 (with alpha). */
-export function encodeBc(format: 'BC1' | 'BC3', rgba: Uint8Array, width: number, height: number): Uint8Array {
+export function encodeBc(
+  format: 'BC1' | 'BC3',
+  rgba: Uint8Array,
+  width: number,
+  height: number,
+): Uint8Array {
   const bw = Math.max(1, Math.ceil(width / 4))
   const bh = Math.max(1, Math.ceil(height / 4))
   const size = format === 'BC1' ? 8 : 16

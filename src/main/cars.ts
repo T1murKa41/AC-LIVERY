@@ -31,7 +31,11 @@ async function readText(path: string): Promise<string | null> {
 const LOD_RE = /_lod_?[b-z]\.kn5$/i
 
 /** Picks the main visual model among the kn5 files of a car folder. */
-export async function pickMainKn5(carPath: string, carId: string, kn5Files: string[]): Promise<string | undefined> {
+export async function pickMainKn5(
+  carPath: string,
+  carId: string,
+  kn5Files: string[],
+): Promise<string | undefined> {
   const exact = kn5Files.find((f) => f.toLowerCase() === `${carId.toLowerCase()}.kn5`)
   if (exact) return exact
   const candidates = kn5Files.filter((f) => !LOD_RE.test(f) && !/collider/i.test(f))
@@ -51,7 +55,9 @@ export async function pickMainKn5(carPath: string, carId: string, kn5Files: stri
   return best
 }
 
-async function readCarUi(carPath: string): Promise<{ name?: string; brand?: string; carClass?: string }> {
+async function readCarUi(
+  carPath: string,
+): Promise<{ name?: string; brand?: string; carClass?: string }> {
   const text = await readText(join(carPath, 'ui', 'ui_car.json'))
   if (!text) return {}
   try {

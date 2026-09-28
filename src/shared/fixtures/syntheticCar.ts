@@ -212,7 +212,11 @@ function meshNode(name: string, materialId: number, b: MeshBuilder): Kn5MeshNode
   for (let i = 0; i < vertexCount; i++) {
     radius = Math.max(
       radius,
-      Math.hypot(b.positions[i * 3]! - cx, b.positions[i * 3 + 1]! - cy, b.positions[i * 3 + 2]! - cz),
+      Math.hypot(
+        b.positions[i * 3]! - cx,
+        b.positions[i * 3 + 1]! - cy,
+        b.positions[i * 3 + 2]! - cz,
+      ),
     )
   }
   return {
@@ -327,7 +331,10 @@ function shade(img: RgbaImage, u0: number, v0: number, u1: number, v1: number, k
   }
 }
 
-function paintSkin(base: [number, number, number], stripe: [number, number, number] | null): RgbaImage {
+function paintSkin(
+  base: [number, number, number],
+  stripe: [number, number, number] | null,
+): RgbaImage {
   const img = image(512, base)
   if (stripe) {
     fillRect(img, 0.02, 0.18, 0.48, 0.24, stripe)
@@ -453,7 +460,12 @@ export function buildSyntheticCar(options: SyntheticCarOptions = {}): SyntheticC
     ),
     'skins/01_red_stripe/Skin_00.dds': encode(red),
     'skins/01_red_stripe/ui_skin.json': new TextEncoder().encode(
-      serializeUiSkin({ skinname: 'Red Stripe', drivername: 'Test Driver', number: '7', team: 'Test' }),
+      serializeUiSkin({
+        skinname: 'Red Stripe',
+        drivername: 'Test Driver',
+        number: '7',
+        team: 'Test',
+      }),
     ),
   }
   return { id: SYNTHETIC_CAR_ID, kn5, files }

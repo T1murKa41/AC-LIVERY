@@ -12,7 +12,13 @@ export function registerSchemePrivileges(): void {
   protocol.registerSchemesAsPrivileged([
     {
       scheme: SCHEME,
-      privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true, corsEnabled: true },
+      privileges: {
+        standard: true,
+        secure: true,
+        supportFetchAPI: true,
+        stream: true,
+        corsEnabled: true,
+      },
     },
   ])
 }

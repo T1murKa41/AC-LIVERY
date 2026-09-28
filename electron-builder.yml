@@ -1,0 +1,27 @@
+appId: io.github.t1murka41.aclivery
+productName: AC Livery
+copyright: Copyright © 2026 AC Livery contributors
+directories:
+  buildResources: build
+  output: release
+files:
+  - out/**
+  - package.json
+extraResources:
+  - from: resources/bin
+    to: bin
+    filter:
+      - '**/*'
+win:
+  target:
+    - nsis
+    - portable
+  artifactName: ${productName}-${version}-${arch}.${ext}
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  artifactName: ${productName}-Setup-${version}.${ext}
+portable:
+  artifactName: ${productName}-${version}-portable.${ext}
+publish:
+  provider: github

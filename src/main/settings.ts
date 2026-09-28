@@ -20,7 +20,10 @@ export class SettingsStore {
     }
     this.cache = {
       acRoot: typeof stored.acRoot === 'string' ? stored.acRoot : null,
-      language: stored.language === 'en' || stored.language === 'ru' ? stored.language : this.defaultLanguage,
+      language:
+        stored.language === 'en' || stored.language === 'ru'
+          ? stored.language
+          : this.defaultLanguage,
     }
     return this.cache
   }

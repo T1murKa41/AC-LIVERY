@@ -5,7 +5,8 @@ import { parseVdf, steamLibraryPaths } from './vdf'
 
 describe('parseLenientJson', () => {
   it('accepts BOM, comments, trailing commas and raw control characters', () => {
-    const text = '\ufeff{\n // comment\n "name": "Line1\nLine2\tTab", /* block */ "list": [1, 2,],\n}'
+    const text =
+      '\ufeff{\n // comment\n "name": "Line1\nLine2\tTab", /* block */ "list": [1, 2,],\n}'
     expect(parseLenientJson(text)).toEqual({ name: 'Line1\nLine2\tTab', list: [1, 2] })
   })
 

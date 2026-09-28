@@ -101,7 +101,8 @@ export async function exportSkin(
       const ext = tex.name.toLowerCase().split('.').pop()
       let bytes: Uint8Array
       if (ext === 'png') bytes = encoders.png(tex.rgba, tex.width, tex.height)
-      else if (ext === 'jpg' || ext === 'jpeg') bytes = encoders.jpeg(tex.rgba, tex.width, tex.height, 95)
+      else if (ext === 'jpg' || ext === 'jpeg')
+        bytes = encoders.jpeg(tex.rgba, tex.width, tex.height, 95)
       else {
         if (ext !== 'dds') warnings.push(`${tex.name}: unknown extension, written as DDS`)
         bytes = await encoders.dds.encode(
@@ -138,7 +139,12 @@ export async function exportSkin(
     } else {
       await rename(staging, target)
     }
-    return { ok: true, path: `content/cars/${carId}/skins/${skinId}`, encoder: encoders.dds.name, warnings }
+    return {
+      ok: true,
+      path: `content/cars/${carId}/skins/${skinId}`,
+      encoder: encoders.dds.name,
+      warnings,
+    }
   } catch (err) {
     await rm(staging, { recursive: true, force: true }).catch(() => undefined)
     return { ok: false, error: 'io', message: err instanceof Error ? err.message : String(err) }

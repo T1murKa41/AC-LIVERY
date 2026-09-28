@@ -51,7 +51,9 @@ export function registerIpc(settings: SettingsStore): void {
   ipcMain.handle('ac:pick', async (e) => {
     const win = BrowserWindow.fromWebContents(e.sender)
     const options = { properties: ['openDirectory' as const] }
-    const result = win ? await dialog.showOpenDialog(win, options) : await dialog.showOpenDialog(options)
+    const result = win
+      ? await dialog.showOpenDialog(win, options)
+      : await dialog.showOpenDialog(options)
     return result.canceled ? null : (result.filePaths[0] ?? null)
   })
   ipcMain.handle('cars:list', async () => listCars(await requireRoot()))
@@ -61,7 +63,8 @@ export function registerIpc(settings: SettingsStore): void {
   )
   ipcMain.handle('skin:export', async (_e, request: ExportRequest) => {
     const { acRoot } = await settings.get()
-    if (!acRoot) return { ok: false, error: 'no-ac-root', message: 'Assetto Corsa folder is not set' }
+    if (!acRoot)
+      return { ok: false, error: 'no-ac-root', message: 'Assetto Corsa folder is not set' }
     const encoders: Encoders = {
       dds: await pickDdsEncoder(texconvCandidates()),
       png: (rgba, w, h) => image(rgba, w, h).toPNG(),

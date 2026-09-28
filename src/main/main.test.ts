@@ -59,8 +59,15 @@ describe('cars', () => {
     const cars = await listCars(root)
     expect(cars.map((c) => c.id).sort()).toEqual(['aclivery_test_coupe', 'bare_car'])
     const coupe = cars.find((c) => c.id === SYNTHETIC_CAR_ID)!
-    expect(coupe).toMatchObject({ name: 'AC Livery Test Coupe', kn5: `${SYNTHETIC_CAR_ID}.kn5`, skinCount: 2 })
-    expect(cars.find((c) => c.id === 'bare_car')).toMatchObject({ name: 'bare_car', kn5: undefined })
+    expect(coupe).toMatchObject({
+      name: 'AC Livery Test Coupe',
+      kn5: `${SYNTHETIC_CAR_ID}.kn5`,
+      skinCount: 2,
+    })
+    expect(cars.find((c) => c.id === 'bare_car')).toMatchObject({
+      name: 'bare_car',
+      kn5: undefined,
+    })
   })
 
   it('reads skins with their ui_skin.json', async () => {
@@ -86,7 +93,10 @@ describe('exportSkin', () => {
       skinname: 'Mine',
       number: '12',
     })
-    expect(await skinStatus(root, SYNTHETIC_CAR_ID, 'my_livery')).toEqual({ exists: true, ours: true })
+    expect(await skinStatus(root, SYNTHETIC_CAR_ID, 'my_livery')).toEqual({
+      exists: true,
+      ours: true,
+    })
     // no staging folders left behind
     const skins = await readdir(join(root, 'content', 'cars', SYNTHETIC_CAR_ID, 'skins'))
     expect(skins.filter((s) => s.startsWith('.'))).toEqual([])
@@ -95,21 +105,41 @@ describe('exportSkin', () => {
   it('uses BC3 when the texture has transparency', async () => {
     const rgba = new Uint8Array(8 * 8 * 4).fill(255)
     rgba[3] = 0
-    await exportSkin(root, request({ textures: [{ name: 'Skin_00.dds', width: 8, height: 8, rgba }] }), encoders, '0')
-    const file = join(root, 'content', 'cars', SYNTHETIC_CAR_ID, 'skins', 'my_livery', 'Skin_00.dds')
+    await exportSkin(
+      root,
+      request({ textures: [{ name: 'Skin_00.dds', width: 8, height: 8, rgba }] }),
+      encoders,
+      '0',
+    )
+    const file = join(
+      root,
+      'content',
+      'cars',
+      SYNTHETIC_CAR_ID,
+      'skins',
+      'my_livery',
+      'Skin_00.dds',
+    )
     expect(parseDds(new Uint8Array(await readFile(file))).format).toBe('BC3')
   })
 
   it('protects existing skins according to the overwrite mode', async () => {
     const foreign = request({ skinId: '00_white' })
-    expect(await exportSkin(root, foreign, encoders, '0')).toMatchObject({ ok: false, error: 'exists' })
+    expect(await exportSkin(root, foreign, encoders, '0')).toMatchObject({
+      ok: false,
+      error: 'exists',
+    })
     expect(await exportSkin(root, { ...foreign, overwrite: 'ours' }, encoders, '0')).toMatchObject({
       ok: false,
       error: 'not-ours',
     })
     expect(await exportSkin(root, request(), encoders, '0')).toMatchObject({ ok: true })
-    expect(await exportSkin(root, request({ overwrite: 'ours' }), encoders, '0')).toMatchObject({ ok: true })
-    expect(await exportSkin(root, { ...foreign, overwrite: 'always' }, encoders, '0')).toMatchObject({
+    expect(await exportSkin(root, request({ overwrite: 'ours' }), encoders, '0')).toMatchObject({
+      ok: true,
+    })
+    expect(
+      await exportSkin(root, { ...foreign, overwrite: 'always' }, encoders, '0'),
+    ).toMatchObject({
       ok: true,
     })
   })
@@ -119,7 +149,9 @@ describe('exportSkin', () => {
       ok: false,
       error: 'invalid-skin-id',
     })
-    const bad = request({ textures: [{ name: '../x.dds', width: 1, height: 1, rgba: new Uint8Array(4) }] })
+    const bad = request({
+      textures: [{ name: '../x.dds', width: 1, height: 1, rgba: new Uint8Array(4) }],
+    })
     expect(await exportSkin(root, bad, encoders, '0')).toMatchObject({ ok: false, error: 'io' })
     const skins = await readdir(join(root, 'content', 'cars', SYNTHETIC_CAR_ID, 'skins'))
     expect(skins.sort()).toEqual(['00_white', '01_red_stripe'])
@@ -127,7 +159,12 @@ describe('exportSkin', () => {
 
   it('writes png textures through the image encoder', async () => {
     const rgba = new Uint8Array(4 * 4 * 4)
-    const result = await exportSkin(root, request({ textures: [{ name: 'decal.png', width: 4, height: 4, rgba }] }), encoders, '0')
+    const result = await exportSkin(
+      root,
+      request({ textures: [{ name: 'decal.png', width: 4, height: 4, rgba }] }),
+      encoders,
+      '0',
+    )
     expect(result.ok).toBe(true)
     const file = join(root, 'content', 'cars', SYNTHETIC_CAR_ID, 'skins', 'my_livery', 'decal.png')
     expect([...(await readFile(file))]).toEqual([0x89, 0x50])
@@ -145,7 +182,8 @@ describe('paths', () => {
 
 describe('registry output', () => {
   it('extracts REG_SZ values', () => {
-    const out = '\r\nHKEY_CURRENT_USER\\Software\\Valve\\Steam\r\n    SteamPath    REG_SZ    c:/program files (x86)/steam\r\n'
+    const out =
+      '\r\nHKEY_CURRENT_USER\\Software\\Valve\\Steam\r\n    SteamPath    REG_SZ    c:/program files (x86)/steam\r\n'
     expect(parseRegValue(out, 'SteamPath')).toBe('c:/program files (x86)/steam')
     expect(parseRegValue(out, 'Missing')).toBeNull()
   })

@@ -163,8 +163,18 @@ function meshArea(node: GeometryNode, world: Float32Array): number {
   let area = 0
   for (let i = 0; i + 2 < idx.length; i += 3) {
     const a = transformPoint(world, p[idx[i]! * 3]!, p[idx[i]! * 3 + 1]!, p[idx[i]! * 3 + 2]!)
-    const b = transformPoint(world, p[idx[i + 1]! * 3]!, p[idx[i + 1]! * 3 + 1]!, p[idx[i + 1]! * 3 + 2]!)
-    const c = transformPoint(world, p[idx[i + 2]! * 3]!, p[idx[i + 2]! * 3 + 1]!, p[idx[i + 2]! * 3 + 2]!)
+    const b = transformPoint(
+      world,
+      p[idx[i + 1]! * 3]!,
+      p[idx[i + 1]! * 3 + 1]!,
+      p[idx[i + 1]! * 3 + 2]!,
+    )
+    const c = transformPoint(
+      world,
+      p[idx[i + 2]! * 3]!,
+      p[idx[i + 2]! * 3 + 1]!,
+      p[idx[i + 2]! * 3 + 2]!,
+    )
     const n = cross(sub(b, a), sub(c, a))
     area += Math.hypot(n[0], n[1], n[2]) / 2
   }
@@ -182,7 +192,10 @@ function windingScore(node: GeometryNode): number {
     const ib = idx[i + 1]! * 3
     const ic = idx[i + 2]! * 3
     const a: V3 = [p[ia]!, p[ia + 1]!, p[ia + 2]!]
-    const g = cross(sub([p[ib]!, p[ib + 1]!, p[ib + 2]!], a), sub([p[ic]!, p[ic + 1]!, p[ic + 2]!], a))
+    const g = cross(
+      sub([p[ib]!, p[ib + 1]!, p[ib + 2]!], a),
+      sub([p[ic]!, p[ic + 1]!, p[ic + 2]!], a),
+    )
     const vn: V3 = [
       n[ia]! + n[ib]! + n[ic]!,
       n[ia + 1]! + n[ib + 1]! + n[ic + 1]!,
@@ -313,8 +326,12 @@ export function measureSideUvOverlap(
       const nrm = transformDirection(
         world,
         node.normals[ids[0]! * 3]! + node.normals[ids[1]! * 3]! + node.normals[ids[2]! * 3]!,
-        node.normals[ids[0]! * 3 + 1]! + node.normals[ids[1]! * 3 + 1]! + node.normals[ids[2]! * 3 + 1]!,
-        node.normals[ids[0]! * 3 + 2]! + node.normals[ids[1]! * 3 + 2]! + node.normals[ids[2]! * 3 + 2]!,
+        node.normals[ids[0]! * 3 + 1]! +
+          node.normals[ids[1]! * 3 + 1]! +
+          node.normals[ids[2]! * 3 + 1]!,
+        node.normals[ids[0]! * 3 + 2]! +
+          node.normals[ids[1]! * 3 + 2]! +
+          node.normals[ids[2]! * 3 + 2]!,
       )
       if (Math.abs(dot(normalize(nrm), frame.left)) < 0.5) continue
       rasterTriangle(
@@ -403,7 +420,9 @@ export function analyzeCar(kn5: Kn5File, options: AnalyzeOptions): CarAnalysis {
   const candidates = diffuseUsage.filter((u) => u.paintable && bodyArea(u) > 0)
   let body = candidates.sort((a, b) => bodyArea(b) - bodyArea(a))[0] ?? null
   if (!body) {
-    body = diffuseUsage.filter((u) => bodyArea(u) > 0).sort((a, b) => bodyArea(b) - bodyArea(a))[0] ?? null
+    body =
+      diffuseUsage.filter((u) => bodyArea(u) > 0).sort((a, b) => bodyArea(b) - bodyArea(a))[0] ??
+      null
   }
   if (!body) warnings.push('no-body-texture')
 

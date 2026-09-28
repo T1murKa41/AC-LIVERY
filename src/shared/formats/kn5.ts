@@ -150,7 +150,9 @@ export function parseKn5(bytes: Uint8Array, options: Kn5ParseOptions = {}): Kn5F
     const active = r.i32()
     const name = r.string()
     const size = r.u32()
-    const data = options.skipTextureData ? (r.bytesView(size), new Uint8Array(0)) : r.bytesView(size)
+    const data = options.skipTextureData
+      ? (r.bytesView(size), new Uint8Array(0))
+      : r.bytesView(size)
     textures.push({ name, active, data })
   }
 
@@ -276,7 +278,8 @@ function readNode(r: BinaryReader, depth: number): Kn5Node {
       const transparent = r.bool()
       const bones: Kn5Bone[] = []
       const boneCount = count(r, 'bone')
-      for (let i = 0; i < boneCount; i++) bones.push({ name: r.string(), transform: r.f32Array(16) })
+      for (let i = 0; i < boneCount; i++)
+        bones.push({ name: r.string(), transform: r.f32Array(16) })
       const vertexCount = count(r, 'vertex')
       const geo = readVertices(r, vertexCount, true)
       geo.indices = readIndices(r, vertexCount)
