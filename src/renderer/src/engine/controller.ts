@@ -3,7 +3,14 @@
 // One instance lives as long as the viewport canvas.
 
 import * as THREE from 'three'
-import { carDir, skinDir, type Backend, type CarDetails, type ExportTexture } from '@shared/api'
+import {
+  carDir,
+  skinDir,
+  SKIN_MARKER_FILE,
+  type Backend,
+  type CarDetails,
+  type ExportTexture,
+} from '@shared/api'
 import type { CarAnalysis } from '@shared/car/analysis'
 import { canDecodeOnCpu, decodeDdsMip, isDds, parseDds } from '@shared/formats/dds'
 import { aoSourceScore } from '@shared/image/ao'
@@ -68,6 +75,9 @@ function hexToRgb(hex: string): [number, number, number] {
   const v = m ? parseInt(m[1]!, 16) : 0xffffff
   return [((v >> 16) & 255) / 255, ((v >> 8) & 255) / 255, (v & 255) / 255]
 }
+
+/** Files of a base skin that describe that skin and are never copied. */
+const BASE_SKIN_OWN_FILES = ['ui_skin.json', 'preview.jpg', 'livery.png', SKIN_MARKER_FILE]
 
 function findFile(files: string[], name: string): string | undefined {
   const lower = name.toLowerCase()
@@ -597,11 +607,10 @@ export class EngineController {
     }
     const skin = this.baseSkin ? this.car?.skins.find((s) => s.id === this.baseSkin) : undefined
     if (!skin) return { textures }
-    const written = new Set(textures.map((t) => t.name.toLowerCase()))
-    const files = this.analysis.paintable
-      .filter((n) => !written.has(n.toLowerCase()))
-      .map((n) => findFile(skin.files, n))
-      .filter((f): f is string => !!f)
+    // Everything else of the base skin (untouched textures, skin.ini, crew
+    // suits, CSP configs) comes along, except its metadata and previews.
+    const skip = new Set([...textures.map((t) => t.name.toLowerCase()), ...BASE_SKIN_OWN_FILES])
+    const files = skin.files.filter((f) => !skip.has(f.toLowerCase()))
     return { textures, copyFiles: files.length ? { fromSkin: skin.id, files } : undefined }
   }
 

@@ -553,6 +553,7 @@ export function buildSyntheticCar(options: SyntheticCarOptions = {}): SyntheticC
     'skins/00_white/ui_skin.json': new TextEncoder().encode(
       serializeUiSkin({ skinname: 'White', number: '0' }),
     ),
+    'skins/00_white/skin.ini': new TextEncoder().encode('[CREW]\nSUIT=default\n'),
     'skins/01_red_stripe/Skin_00.dds': encode(red),
     [`skins/01_red_stripe/${DECAL_TEXTURE}`]: encodeAlpha(paintDecal([30, 90, 230])),
     'skins/01_red_stripe/ui_skin.json': new TextEncoder().encode(

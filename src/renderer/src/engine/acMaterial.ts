@@ -86,11 +86,12 @@ varying vec2 vUv;
 ${SKY_GLSL}
 void main() {
   vec4 diff = hasDiffuse ? texture2D(txDiffuse, vUv) : vec4(1.0);
-  if (useDetail) {
-    vec4 det = texture2D(txDetail, vUv * detailUVMultiplier);
-    diff.rgb = mix(det.rgb, diff.rgb, diff.a);
-  }
   if (alphaTested && diff.a < ksAlphaRef) discard;
+  if (useDetail) {
+    // The skin's alpha masks the detail map: 0 = full detail, 1 = none.
+    vec4 det = texture2D(txDetail, vUv * detailUVMultiplier);
+    diff.rgb *= mix(det.rgb, vec3(1.0), diff.a);
+  }
 
   vec3 N = normalize(vNormal);
   if (!gl_FrontFacing) N = -N;
@@ -168,6 +169,7 @@ export function createAcMaterial(
     material.blendMode === BLEND_COVERAGE ||
     /(^|_|perpixel)at($|_)/.test(shader)
   const emissive = getProperty(material, 'ksEmissive')?.c ?? [0, 0, 0]
+  const alphaRef = num(material, 'ksAlphaRef', 0.5)
   // Decals and logos usually sit on (almost) the same surface as the body.
   // AC draws them after the body; here they are pulled slightly towards the
   // camera so they win the depth test instead of flickering or disappearing.
@@ -197,7 +199,9 @@ export function createAcMaterial(
       ksSpecular: { value: num(material, 'ksSpecular', 0.3) },
       ksSpecularEXP: { value: num(material, 'ksSpecularEXP', 20) },
       ksEmissive: { value: new THREE.Vector3(...emissive) },
-      ksAlphaRef: { value: num(material, 'ksAlphaRef', 0.5) },
+      // Kunos decals often ship with ksAlphaRef = 0 and still cut out their
+      // transparent parts in game.
+      ksAlphaRef: { value: alphaRef > 0 ? alphaRef : 0.5 },
       fresnelC: { value: num(material, 'fresnelC', 0.05) },
       fresnelEXP: { value: num(material, 'fresnelEXP', 3) },
       fresnelMaxLevel: { value: num(material, 'fresnelMaxLevel', 0.5) },

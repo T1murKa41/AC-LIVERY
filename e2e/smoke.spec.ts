@@ -84,6 +84,7 @@ test('load a car, paint it and save the skin', async ({ page }) => {
     'Skin_00.dds',
     'livery.png',
     'preview.jpg',
+    'skin.ini', // carried over from the base skin
     'ui_skin.json',
   ])
 
@@ -164,7 +165,8 @@ test('repainting changes the paint you see, even under a livery overlay', async 
     }
     return { names, blueShare: blue / (px.length / 4) }
   })
-  // painted overlay, plus the untouched body texture copied from the base skin
+  // painted overlay, plus the rest of the base skin (untouched body texture,
+  // skin.ini) without its metadata
   expect(result.names.sort()).toEqual(
     [
       '.aclivery.json',
@@ -172,6 +174,7 @@ test('repainting changes the paint you see, even under a livery overlay', async 
       'Skin_00.dds',
       'livery.png',
       'preview.jpg',
+      'skin.ini',
       'ui_skin.json',
     ].sort(),
   )
