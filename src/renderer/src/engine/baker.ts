@@ -70,9 +70,9 @@ void main() {
 }
 `
 
-// Projects one vinyl onto the texels of the car. Surfaces turned away from
-// the projector fade out, so a sticker on the left door never shows up on the
-// right door or wraps around a sharp edge.
+// Projects one vinyl onto the texels of the car. Surfaces seen at a grazing
+// angle fade out so vinyls do not smear around sharp edges, and the depth
+// limit keeps a sticker on the left door off the right door.
 const LAYER_FRAGMENT = /* glsl */ `
 uniform sampler2D vinyl;
 uniform float opacity;
@@ -85,24 +85,28 @@ varying vec2 vUv;
 varying vec3 vWorldPos;
 varying vec3 vWorldNormal;
 
-vec4 project(int i) {
-  vec3 q = vWorldPos - origin[i];
-  float s = dot(q, axisS[i]) + 0.5;
-  float t = dot(q, axisT[i]) + 0.5;
-  float r = dot(q, axisR[i]);
-  if (s < 0.0 || s > 1.0 || t < 0.0 || t > 1.0 || abs(r) > 0.5) return vec4(0.0);
-  float facing = dot(normalize(vWorldNormal), -normalize(axisR[i]));
-  vec4 c = texture2D(vinyl, vec2(s, t));
-  c.a *= smoothstep(0.1, 0.3, facing);
+// No early returns or dynamic array indexing around the texture fetch: the
+// sample must happen in uniform control flow, otherwise some Direct3D
+// translations of WebGL drop or miscompile it.
+vec4 project(vec3 o, vec3 as, vec3 at, vec3 ar) {
+  vec3 q = vWorldPos - o;
+  vec2 st = vec2(dot(q, as), dot(q, at)) + 0.5;
+  float r = dot(q, ar);
+  vec2 in2 = step(vec2(0.0), st) * step(st, vec2(1.0));
+  float inside = in2.x * in2.y * step(abs(r), 0.5);
+  // abs(): some models have flipped normals on mirrored halves; the depth
+  // limit already keeps vinyls from reaching the other side of the car
+  float facing = abs(dot(normalize(vWorldNormal), normalize(ar)));
+  vec4 c = texture2D(vinyl, clamp(st, 0.0, 1.0));
+  c.a *= inside * smoothstep(0.1, 0.3, facing);
   return c;
 }
 
 void main() {
-  vec4 c = project(0);
-  if (count > 1) {
-    vec4 m = project(1);
-    if (m.a > c.a) c = m;
-  }
+  vec4 c = project(origin[0], axisS[0], axisT[0], axisR[0]);
+  vec4 m = project(origin[1], axisS[1], axisT[1], axisR[1]);
+  m.a *= step(1.5, float(count));
+  c = m.a > c.a ? m : c;
   c.a *= opacity;
   if (c.a <= 0.0) discard;
   gl_FragColor = c;
@@ -123,16 +127,18 @@ uniform vec2 texel;
 varying vec2 vUv;
 void main() {
   vec4 c = texture2D(src, vUv);
-  if (c.a > 0.5) { gl_FragColor = c; return; }
   vec3 sum = vec3(0.0);
   float n = 0.0;
   for (int dy = -1; dy <= 1; dy++) {
     for (int dx = -1; dx <= 1; dx++) {
       vec4 s = texture2D(src, vUv + vec2(float(dx), float(dy)) * texel);
-      if (s.a > 0.5) { sum += s.rgb; n += 1.0; }
+      float w = step(0.5, s.a);
+      sum += s.rgb * w;
+      n += w;
     }
   }
-  gl_FragColor = n > 0.0 ? vec4(sum / n, 1.0) : vec4(0.0);
+  vec4 grown = n > 0.0 ? vec4(sum / max(n, 1.0), 1.0) : vec4(0.0);
+  gl_FragColor = c.a > 0.5 ? c : grown;
 }
 `
 
@@ -314,7 +320,9 @@ export class LiveryBaker {
       lu.vinyl!.value = layer.texture
       lu.opacity!.value = layer.opacity
       lu.count!.value = Math.min(2, layer.projectors.length)
-      layer.projectors.slice(0, 2).forEach((p, i) => {
+      // the second slot always holds valid vectors (a copy when unused)
+      const pair = [layer.projectors[0]!, layer.projectors[1] ?? layer.projectors[0]!]
+      pair.forEach((p, i) => {
         lu.origin!.value[i].set(...p.origin)
         lu.axisS!.value[i].set(...p.axisS)
         lu.axisT!.value[i].set(...p.axisT)

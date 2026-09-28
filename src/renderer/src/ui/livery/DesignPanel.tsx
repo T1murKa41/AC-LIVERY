@@ -222,6 +222,7 @@ function LayerProperties() {
   const updateLayer = useStore((s) => s.updateLayer)
   const updatePlacement = useStore((s) => s.updatePlacement)
   const [keepAspect, setKeepAspect] = useState(true)
+  const offPaint = useStore((s) => s.selectedOffPaint)
   if (!layer) return null
   const p = layer.placement
   const disabled = layer.locked
@@ -237,6 +238,7 @@ function LayerProperties() {
   return (
     <section className="properties">
       <h3>{t('design.properties')}</h3>
+      {offPaint && <p className="notice warn">{t('design.offPaint')}</p>}
       <label className="field">
         <span>{t('design.name')}</span>
         <input

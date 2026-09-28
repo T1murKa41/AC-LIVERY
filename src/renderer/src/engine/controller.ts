@@ -426,6 +426,7 @@ export class EngineController {
     for (const name of cleared) this.viewer.setOverride(name, TRANSPARENT)
     for (const name of textures) this.viewer.setOverride(name, baked.get(name.toLowerCase())!)
     this.painted = textures
+    this.setPaintFilter(textures)
     this.cleared = cleared
     this.baseSkin = params.baseSkin
     this.liveryActive = textures.length > 0
@@ -437,6 +438,58 @@ export class EngineController {
 
   displayFrame(): Frame | null {
     return this.viewer.displayFrame()
+  }
+
+  private paintedMeshes = new Set<number>()
+
+  /** Mouse rays and placement only consider meshes that carry the given textures. */
+  setPaintFilter(textures: string[]): void {
+    const car = this.viewer.loadedCar
+    const keys = new Set(textures.map((t) => t.toLowerCase()))
+    this.paintedMeshes = new Set(
+      (car?.meshes ?? [])
+        .filter((m) => {
+          const tex = car!.materials[m.materialId]?.textures.find((t) => t.name === 'txDiffuse')
+          return !!tex && keys.has(tex.texture.toLowerCase())
+        })
+        .map((m) => m.index),
+    )
+    this.viewer.hitFilter = this.paintedMeshes.size ? (i) => this.paintedMeshes.has(i) : null
+  }
+
+  /**
+   * Whether any part of a layer's projector reaches the painted surface.
+   * Samples the centre and four inner points of each projector.
+   */
+  layerReachesPaint(layer: Layer): boolean {
+    const frame = this.displayFrame()
+    if (!frame || this.paintedMeshes.size === 0) return true
+    const filter = (i: number) => this.paintedMeshes.has(i)
+    const len2 = (v: number[]) => v[0]! ** 2 + v[1]! ** 2 + v[2]! ** 2
+    for (const p of projectors(frame, layer.placement)) {
+      const depth = 1 / Math.sqrt(len2(p.axisR))
+      const dir = p.axisR.map((v) => v * depth) as [number, number, number]
+      const sx = p.axisS.map((v) => v / len2(p.axisS))
+      const tx = p.axisT.map((v) => v / len2(p.axisT))
+      const samples: [number, number][] = [
+        [0, 0],
+        [-0.3, -0.3],
+        [0.3, -0.3],
+        [-0.3, 0.3],
+        [0.3, 0.3],
+      ]
+      for (const [a, b] of samples) {
+        const from = [0, 1, 2].map(
+          (k) => p.origin[k]! + sx[k]! * a + tx[k]! * b - dir[k]! * depth * 0.5,
+        ) as [number, number, number]
+        if (this.viewer.segmentHits(from, dir, depth, filter)) return true
+      }
+    }
+    return false
+  }
+
+  gpuInfo(): string {
+    return this.viewer.gpuInfo()
   }
 
   /** Rasterizes changed layers and returns the visible ones, bottom first. */

@@ -4,6 +4,7 @@
 import type { CarDetails } from '@shared/api'
 import { isDds, parseDds } from '@shared/formats/dds'
 import type { LiveryCandidate, SkinTextureStatus } from './controller'
+import type { LogEntry } from './log'
 import type { LoadedCar } from './types'
 
 function textureFormat(data: Uint8Array): string {
@@ -33,6 +34,8 @@ export interface ReportInput {
   candidates?: readonly LiveryCandidate[]
   painted?: readonly string[]
   appVersion?: string
+  gpu?: string
+  log?: readonly LogEntry[]
 }
 
 export function buildReport({
@@ -43,6 +46,8 @@ export function buildReport({
   candidates = [],
   painted = [],
   appVersion,
+  gpu,
+  log = [],
 }: ReportInput): string {
   const a = loaded.analysis
   const f = a.frame
@@ -52,6 +57,7 @@ export function buildReport({
   push(`AC Livery diagnostics${appVersion ? ` (${appVersion})` : ''}`)
   push(`car: ${car.id} "${car.name}" model=${car.kn5 ?? '-'} kn5 v${loaded.version}`)
   push(`kn5 files: ${car.kn5Files.join(', ')}`)
+  if (gpu) push(`gpu: ${gpu}`)
   push(
     `frame: ${f.source}${f.mirrored ? ' mirrored' : ''} size=${f.length.toFixed(2)}x${f.width.toFixed(2)}x${f.height.toFixed(2)} ` +
       `fwd=[${f.forward.map((v) => v.toFixed(2)).join(',')}] left=[${f.left.map((v) => v.toFixed(2)).join(',')}]`,
@@ -109,6 +115,11 @@ export function buildReport({
   const hidden = loaded.meshes.filter((m) => m.hidden)
   push(`meshes: ${loaded.meshes.length}, hidden by default: ${hidden.length}`)
   for (const m of hidden) push(`  hidden (${m.hiddenReason}): ${m.path}/${m.name}`)
+  if (log.length) {
+    push()
+    push(`log (${log.length}):`)
+    for (const e of log) push(`  [${e.level}${e.count > 1 ? ` x${e.count}` : ''}] ${e.message}`)
+  }
   return lines.join('\n')
 }
 

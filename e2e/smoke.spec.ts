@@ -16,7 +16,7 @@ async function openCar(page: Page, text?: string) {
   await expect(page.locator('.view-toolbar')).toBeVisible({ timeout: 60_000 })
 }
 
-type PixelTest = 'white' | 'blue'
+type PixelTest = 'white' | 'light' | 'blue' | 'orange'
 
 /** Share of preview pixels of a kind, decoded in the page. */
 async function previewShare(page: Page, dir: string, kind: PixelTest): Promise<number> {
@@ -34,7 +34,14 @@ async function previewShare(page: Page, dir: string, kind: PixelTest): Promise<n
         const r = px[i]!
         const g = px[i + 1]!
         const b = px[i + 2]!
-        const hit = kind === 'white' ? r > 200 && g > 200 && b > 200 : b > r + 50 && b > g + 20
+        const hit =
+          kind === 'white'
+            ? r > 200 && g > 200 && b > 200
+            : kind === 'light'
+              ? r > 120 && g > 120 && b > 120 && Math.abs(r - b) < 30
+              : kind === 'blue'
+                ? b > r + 50 && b > g + 20
+                : r > 230 && g > 70 && g < 110 && b < 60
         if (hit) n++
       }
       return n / (px.length / 4)
@@ -224,4 +231,31 @@ test('stock decals can be removed from the new skin', async ({ page }) => {
     return { width: v.getUint32(16, true), fourcc: String.fromCharCode(...bytes.subarray(84, 88)) }
   })
   expect(decal).toEqual({ width: 4, fourcc: 'DXT5' })
+})
+
+test('text vinyls are baked onto the body', async ({ page }) => {
+  await openCar(page)
+  await page.locator('.tabs button').nth(1).click()
+  await page.locator('.swatch').nth(11).click() // near-black base
+  await page.locator('.view-toolbar button').nth(1).click() // left side: lands on the door
+
+  const exportAs = async (name: string) => {
+    await panel(page, 'save')
+    await page.getByLabel(/^(Название|Name)$/).fill(name)
+    await page.locator('.btn.primary.wide').click()
+    await expect(page.locator('.notice.ok')).toBeVisible({ timeout: 60_000 })
+    await panel(page, 'design')
+  }
+  await exportAs('Plain')
+  await page.locator('.livery button', { hasText: /^(Номер|Number)$/ }).click()
+  await expect(page.locator('.layer-row')).toHaveCount(1)
+  await expect(page.locator('.properties .notice.warn')).toHaveCount(0)
+  await exportAs('With Number')
+
+  const plain = await previewShare(page, 'content/cars/aclivery_test_coupe/skins/plain/', 'light')
+  const dir = 'content/cars/aclivery_test_coupe/skins/with_number/'
+  const numbered = await previewShare(page, dir, 'light')
+  expect(numbered - plain).toBeGreaterThan(0.002)
+  // the orange selection outline must not be in the preview
+  expect(await previewShare(page, dir, 'orange')).toBe(0)
 })

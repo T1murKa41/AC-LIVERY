@@ -361,6 +361,17 @@ export class Viewer {
 
   /** Ray from the camera through a client point, hitting the visible car. */
   raycast(clientX: number, clientY: number): RayHit | null {
+    return this.raycastFiltered(clientX, clientY, this.hitFilter)
+  }
+
+  /** Limits app-facing ray hits to some meshes (e.g. the painted body). */
+  hitFilter: ((meshIndex: number) => boolean) | null = null
+
+  private raycastFiltered(
+    clientX: number,
+    clientY: number,
+    filter: ((meshIndex: number) => boolean) | null,
+  ): RayHit | null {
     if (!this.carRoot) return null
     const rect = this.canvas.getBoundingClientRect()
     const ndc = new THREE.Vector2(
@@ -368,10 +379,13 @@ export class Viewer {
       -((clientY - rect.top) / rect.height) * 2 + 1,
     )
     this.raycaster.setFromCamera(ndc, this.camera)
-    const hit = this.raycaster.intersectObjects(
-      this.meshes.filter((m) => m.mesh.visible).map((m) => m.mesh),
-      false,
-    )[0]
+    // the first hit on an accepted mesh: rays go through glass and decals
+    const hit = this.raycaster
+      .intersectObjects(
+        this.meshes.filter((m) => m.mesh.visible).map((m) => m.mesh),
+        false,
+      )
+      .find((h) => !filter || filter(h.object.userData.index as number))
     if (!hit) return null
     const d = this.raycaster.ray.direction
     return {
@@ -425,6 +439,39 @@ export class Viewer {
       this.scene.add(group)
     }
     this.requestRender()
+  }
+
+  /**
+   * True if a segment (display space) crosses one of the accepted meshes.
+   * Used to tell whether a vinyl's projector reaches the painted body.
+   */
+  segmentHits(
+    from: [number, number, number],
+    dir: [number, number, number],
+    length: number,
+    filter: (meshIndex: number) => boolean,
+  ): boolean {
+    const ray = new THREE.Raycaster(
+      new THREE.Vector3(...from),
+      new THREE.Vector3(...dir).normalize(),
+      0,
+      length,
+    )
+    return ray
+      .intersectObjects(
+        this.meshes.map((m) => m.mesh),
+        false,
+      )
+      .some((h) => filter(h.object.userData.index as number))
+  }
+
+  /** GPU and WebGL details for diagnostics. */
+  gpuInfo(): string {
+    const gl = this.renderer.getContext()
+    const ext = gl.getExtension('WEBGL_debug_renderer_info')
+    const name = ext ? gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER)
+    const version = gl.getParameter(gl.VERSION)
+    return `${name} | ${version}`
   }
 
   /** Display-space car frame (the model's frame with mirroring undone). */
@@ -724,8 +771,12 @@ export class Viewer {
       cam.lookAt(origin.x, origin.y - f.height * 0.08, origin.z)
     }
     const prev = this.renderer.getRenderTarget()
+    // editor helpers must not end up in the saved preview
+    const outlineVisible = this.outline?.visible ?? false
+    if (this.outline) this.outline.visible = false
     this.renderer.setRenderTarget(target)
     this.renderer.render(this.scene, cam)
+    if (this.outline) this.outline.visible = outlineVisible
     const pixels = new Uint8Array(width * height * 4)
     this.renderer.readRenderTargetPixels(target, 0, 0, width, height, pixels)
     this.renderer.setRenderTarget(prev)

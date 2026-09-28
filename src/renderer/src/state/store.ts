@@ -20,6 +20,7 @@ import {
   type LiveryCandidate,
   type SkinTextureStatus,
 } from '../engine/controller'
+import { logEntries } from '../engine/log'
 import { buildReport, describeMesh } from '../engine/report'
 import { fileToDataUrl, fontFamily, imageAspect, textAspect } from '../engine/vinyl'
 import { worldToPosition } from '@shared/design/placement'
@@ -135,6 +136,8 @@ interface State {
   past: Snapshot[]
   future: Snapshot[]
   designError: string | null
+  /** The selected vinyl does not reach any repainted surface. */
+  selectedOffPaint: boolean
 }
 
 interface Actions {
@@ -212,6 +215,7 @@ export const useStore = create<State & Actions>((set, get) => {
         cleared: draft.clearedTextures ?? [],
       })
       set({ aoStatus: 'ready', aoUsed })
+      refreshOutline()
       if (get().highlight) engine.highlightTextures(get().paintedTextures())
     } catch (err) {
       console.error(err)
@@ -259,6 +263,8 @@ export const useStore = create<State & Actions>((set, get) => {
     const { tab, selectedLayer, draft } = get()
     const layer = draft.design.layers.find((l) => l.id === selectedLayer) ?? null
     engine?.showOutline(tab === 'livery' ? layer : null)
+    const offPaint = !!layer && !!engine && !engine.layerReachesPaint(layer)
+    if (offPaint !== get().selectedOffPaint) set({ selectedOffPaint: offPaint })
   }
 
   const setDesign = (design: Design): void => {
@@ -325,6 +331,7 @@ export const useStore = create<State & Actions>((set, get) => {
     past: [],
     future: [],
     designError: null,
+    selectedOffPaint: false,
 
     async init() {
       const settings = await get().backend.getSettings()
@@ -422,6 +429,7 @@ export const useStore = create<State & Actions>((set, get) => {
           liveryCandidates,
           autoLivery: engine.autoLiveryTextures(),
         })
+        engine.setPaintFilter(get().paintedTextures())
         if (get().tab === 'livery') void rebake()
       } catch (err) {
         const kind = (err as { kind?: string }).kind
@@ -623,6 +631,8 @@ export const useStore = create<State & Actions>((set, get) => {
         skinStatus,
         candidates: get().liveryCandidates,
         painted: get().paintedTextures(),
+        gpu: engine?.gpuInfo(),
+        log: logEntries(),
       })
     },
 

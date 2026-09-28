@@ -96,6 +96,8 @@ export const en: Shape<typeof ru> = {
       'texconv.exe not found: the texture was saved with the built-in encoder (slightly lower BC1/BC3 quality).',
   },
   design: {
+    offPaint:
+      'This vinyl does not reach any repainted surface, so it is not visible. Drag it onto the body or tick the right texture on the Base panel.',
     add: 'Add',
     addText: 'Text',
     addNumber: 'Number',
@@ -153,6 +155,10 @@ export const en: Shape<typeof ru> = {
     },
   },
   info: {
+    errors_one: 'Errors: {{count}}',
+    errors_few: 'Errors: {{count}}',
+    errors_many: 'Errors: {{count}}',
+    errors_other: 'Errors: {{count}}',
     bodyTexture: 'Livery texture',
     mapsTexture: 'Material map',
     paintable: 'Paintable textures',

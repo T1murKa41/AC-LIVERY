@@ -1,4 +1,5 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useState, useSyncExternalStore } from 'react'
+import { logEntries, subscribeLog } from '../engine/log'
 import { useTranslation } from 'react-i18next'
 import { useStore } from '../state/store'
 
@@ -30,6 +31,8 @@ export function InfoTab() {
   const setShowHidden = useStore((s) => s.setShowHidden)
   const diagnosticsReport = useStore((s) => s.diagnosticsReport)
   const [copied, setCopied] = useState(false)
+  const log = useSyncExternalStore(subscribeLog, logEntries)
+  const errors = log.filter((e) => e.level === 'error')
   const [report, setReport] = useState<string | null>(null)
   const describePicked = useStore((s) => s.describePicked)
   const pickedLines = useMemo(
@@ -118,6 +121,19 @@ export function InfoTab() {
         {report && <textarea className="mono report-text" readOnly value={report} rows={8} />}
       </div>
 
+      {errors.length > 0 && (
+        <details className="load-warnings" open>
+          <summary>{t('info.errors', { count: errors.length })}</summary>
+          <ul>
+            {errors.slice(-8).map((e) => (
+              <li key={e.time + e.message} className="mono">
+                {e.count > 1 ? `×${e.count} ` : ''}
+                {e.message.slice(0, 400)}
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
       {warnings.length > 0 && (
         <details className="load-warnings">
           <summary>{warnings.length} ⚠</summary>
