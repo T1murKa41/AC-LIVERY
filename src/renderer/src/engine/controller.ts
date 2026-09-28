@@ -5,6 +5,7 @@
 import * as THREE from 'three'
 import { carDir, skinDir, type Backend, type CarDetails, type ExportTexture } from '@shared/api'
 import type { CarAnalysis } from '@shared/car/analysis'
+import { canDecodeOnCpu, decodeDdsMip, isDds, parseDds } from '@shared/formats/dds'
 import { aoSourceScore } from '@shared/image/ao'
 import { LiveryBaker, readTexture, uvCoverage, type BakeMesh } from './baker'
 import { extractAoInWorker } from './aoWorker'
@@ -46,6 +47,7 @@ export class EngineController {
   private readonly skinTextures = new Map<string, Map<string, TextureInfo>>()
   private readonly aoCache = new Map<string, THREE.DataTexture | null>()
   private liveryActive = false
+  private autoAoPick: AoSource | null = null
   private generation = 0
 
   constructor(
@@ -83,12 +85,17 @@ export class EngineController {
     this.car = car
   }
 
+  get hasLivery(): boolean {
+    return this.liveryActive
+  }
+
   private disposeCarResources(): void {
     for (const skin of this.skinTextures.values())
       for (const t of skin.values()) t.texture.dispose()
     this.skinTextures.clear()
     for (const t of this.aoCache.values()) t?.dispose()
     this.aoCache.clear()
+    this.autoAoPick = null
     this.liveryActive = false
     this.analysis = null
   }
@@ -163,21 +170,57 @@ export class EngineController {
     return null
   }
 
+  /**
+   * Small RGBA preview of a candidate for scoring. DDS files are decoded on the
+   * CPU from a small mip level, so dozens of stock skins can be compared
+   * without uploading their full textures to the GPU.
+   */
+  private async candidatePreview(source: AoSource, size: number): Promise<Uint8Array | null> {
+    const body = this.analysis?.bodyTexture
+    if (!body || !this.car) return null
+    let bytes: Uint8Array | null = null
+    if (source === 'model') {
+      bytes =
+        this.viewer.loadedCar?.textures.find((t) => t.name.toLowerCase() === body.toLowerCase())
+          ?.data ?? null
+    } else if (source.startsWith('skin:')) {
+      const skin = this.car.skins.find((s) => s.id === source.slice(5))
+      const file = skin && findFile(skin.files, body)
+      if (skin && file) {
+        bytes = new Uint8Array(
+          await this.backend.readFile(`${skinDir(this.car.id, skin.id)}/${file}`),
+        )
+      }
+    }
+    if (bytes && isDds(bytes)) {
+      const dds = parseDds(bytes)
+      if (canDecodeOnCpu(dds.format)) {
+        const mip =
+          dds.mips.find((m) => Math.max(m.width, m.height) <= size * 2) ?? dds.mips.at(-1)!
+        return resampleNearest(decodeDdsMip(dds.format, mip), mip.width, mip.height, size, size)
+      }
+    }
+    // PNG/JPG or formats only the GPU can decode
+    const info = await this.sourceTexture(source).catch(() => null)
+    return info ? readTexture(this.viewer.renderer, info.texture, size, size) : null
+  }
+
   private async pickCleanest(): Promise<AoSource> {
-    const renderer = this.viewer.renderer
+    if (this.autoAoPick) return this.autoAoPick
     const size = 64
-    const mask = uvCoverage(renderer, this.bakeMeshes(), size, size)
+    const mask = uvCoverage(this.viewer.renderer, this.bakeMeshes(), size, size)
     let best: AoSource = 'model'
     let bestScore = -Infinity
     for (const candidate of this.aoCandidates()) {
-      const info = await this.sourceTexture(candidate).catch(() => null)
-      if (!info) continue
-      const score = aoSourceScore(readTexture(renderer, info.texture, size, size), mask)
+      const rgba = await this.candidatePreview(candidate, size).catch(() => null)
+      if (!rgba) continue
+      const score = aoSourceScore(rgba, mask)
       if (score > bestScore) {
         bestScore = score
         best = candidate
       }
     }
+    this.autoAoPick = best
     return best
   }
 
@@ -298,6 +341,24 @@ export class EngineController {
     this.baker.dispose()
     this.viewer.dispose()
   }
+}
+
+function resampleNearest(
+  src: Uint8Array,
+  sw: number,
+  sh: number,
+  dw: number,
+  dh: number,
+): Uint8Array {
+  const out = new Uint8Array(dw * dh * 4)
+  for (let y = 0; y < dh; y++) {
+    const sy = Math.min(sh - 1, Math.floor(((y + 0.5) * sh) / dh))
+    for (let x = 0; x < dw; x++) {
+      const sx = Math.min(sw - 1, Math.floor(((x + 0.5) * sw) / dw))
+      out.set(src.subarray((sy * sw + sx) * 4, (sy * sw + sx) * 4 + 4), (y * dw + x) * 4)
+    }
+  }
+  return out
 }
 
 // ---------------------------------------------------------------------------

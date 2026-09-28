@@ -105,15 +105,11 @@ interface Actions {
 }
 
 let engine: EngineController | null = null
-let bakeScheduled = false
+let bakeQueued = false
+let bakeRunning: Promise<void> | null = null
 
 export const useStore = create<State & Actions>((set, get) => {
-  const rebake = async (): Promise<void> => {
-    if (bakeScheduled) return
-    bakeScheduled = true
-    // coalesce rapid slider/colour changes into one bake per frame
-    await new Promise((r) => requestAnimationFrame(r))
-    bakeScheduled = false
+  const bakeOnce = async (): Promise<void> => {
     const { draft, analysis, tab } = get()
     if (!engine || !analysis?.bodyTexture || tab !== 'livery') return
     const needsAo = draft.aoSource !== 'none' && draft.aoStrength > 0
@@ -131,6 +127,23 @@ export const useStore = create<State & Actions>((set, get) => {
       console.error(err)
       set({ aoStatus: 'ready', aoUsed: 'none' })
     }
+  }
+
+  /** Bakes after the current frame; rapid changes collapse into one bake. Resolves when idle. */
+  const rebake = (): Promise<void> => {
+    bakeQueued = true
+    if (!bakeRunning) {
+      bakeRunning = (async () => {
+        while (bakeQueued) {
+          bakeQueued = false
+          await new Promise((r) => requestAnimationFrame(r))
+          await bakeOnce()
+        }
+      })().finally(() => {
+        bakeRunning = null
+      })
+    }
+    return bakeRunning
   }
 
   return {
@@ -323,6 +336,8 @@ export const useStore = create<State & Actions>((set, get) => {
       }
       set({ exportState: { status: 'working' } })
       try {
+        // make sure the texture on screen is the one that gets saved
+        if (bakeRunning || !engine.hasLivery) await rebake()
         const textures = engine.exportTextures()
         if (!textures.length) throw new Error(i18n.t('livery.noTexture'))
         const preview = await engine.previewSize()

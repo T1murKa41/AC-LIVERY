@@ -52,3 +52,12 @@ test('warns about shared side UVs', async ({ page }) => {
   await page.locator('.tabs button').nth(2).click()
   await expect(page.locator('.info .notice.warn')).toBeVisible()
 })
+
+test('exporting right after opening the livery tab waits for the bake', async ({ page }) => {
+  await page.goto('/')
+  await page.locator('.car-item').first().click()
+  await expect(page.locator('.view-toolbar')).toBeVisible({ timeout: 60_000 })
+  await page.locator('.tabs button').nth(1).click()
+  await page.locator('.btn.primary.wide').click()
+  await expect(page.locator('.notice.ok')).toBeVisible({ timeout: 60_000 })
+})
