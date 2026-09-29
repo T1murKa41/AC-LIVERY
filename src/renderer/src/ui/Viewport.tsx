@@ -4,6 +4,7 @@ import { EngineController } from '../engine/controller'
 import type { ViewMode } from '../engine/viewer'
 import { useStore } from '../state/store'
 import { Gizmo } from './Gizmo'
+import { LeagueTable } from './LeagueTable'
 
 const VIEWS: ViewMode[] = ['perspective', 'left', 'right', 'top', 'front', 'rear']
 
@@ -32,6 +33,7 @@ export function Viewport() {
     <section className="viewport">
       <canvas ref={canvasRef} className="viewport-canvas" />
       {load.status === 'ready' && <Gizmo />}
+      {load.status === 'ready' && tab === 'league' && <LeagueTable />}
       {load.status === 'ready' && (
         <div className="view-toolbar" role="toolbar">
           {VIEWS.map((v) => (

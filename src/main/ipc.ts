@@ -15,6 +15,7 @@ import {
   writeAutosave,
 } from './projects'
 import type { SettingsStore } from './settings'
+import { StickerStore } from './stickers'
 import { TemplateStore } from './templates'
 import { pickDdsEncoder } from './texconv'
 
@@ -120,6 +121,13 @@ export function registerIpc(settings: SettingsStore): void {
     const path = projects.allow(picked)
     return { path, bytes: await readProjectFile(path) }
   })
+  const stickers = new StickerStore(join(app.getPath('userData'), 'stickers'))
+  ipcMain.handle('stickers:list', () => stickers.list())
+  ipcMain.handle('stickers:add', (_e, name: string, mime: string, data: Uint8Array) =>
+    stickers.add(String(name), String(mime), data),
+  )
+  ipcMain.handle('stickers:delete', (_e, id: string) => stickers.remove(id))
+
   const templates = new TemplateStore(join(app.getPath('userData'), 'templates'))
   ipcMain.handle('templates:list', () => templates.list())
   ipcMain.handle('templates:read', (_e, id: string) => templates.read(id))

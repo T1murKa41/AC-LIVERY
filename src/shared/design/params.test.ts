@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest'
-import { fillText, paramValues, placeholders, resolveDraft, STANDARD_PARAMS } from './params'
+import {
+  countryName,
+  fillText,
+  paramValues,
+  placeholders,
+  resolveDraft,
+  STANDARD_PARAMS,
+} from './params'
 import {
   DEFAULT_PARTS,
   DEFAULT_PLACEMENT,
@@ -62,6 +69,28 @@ describe('template parameters', () => {
     expect(img.visible && img.kind === 'image' && img.asset).toBe('a1')
     // the source draft is untouched
     expect(number.text).toBe('{number}')
+  })
+
+  it('turns flags into slots and country names', () => {
+    const flag = {
+      ...newImageLayer('', 'flag', DEFAULT_PLACEMENT, 4 / 3),
+      bindings: { asset: 'country' },
+    }
+    const label = newTextLayer('{driver} ({country})', DEFAULT_PLACEMENT, 1)
+    const r = resolveDraft({
+      baseColor: '#000000',
+      design: { layers: [flag, label], assets: {} },
+      parts: DEFAULT_PARTS,
+      csp: { colorA: '#111111', colorB: '#222222' },
+      meta: { country: '{country}' },
+      params: [...STANDARD_PARAMS],
+      values: { country: 'flag:de', driver: 'Ann' },
+    })
+    const [f, t] = r.design.layers as [Layer, Layer]
+    expect(f.visible && f.kind === 'image' && f.asset).toBe('flag:de')
+    expect(t.kind === 'text' && t.text).toBe('Ann (Germany)')
+    expect(r.meta.country).toBe('Germany')
+    expect(countryName('flag:gb')).toBe('United Kingdom')
   })
 
   it('leaves drafts without parameters alone', () => {

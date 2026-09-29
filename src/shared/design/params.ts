@@ -5,14 +5,28 @@
 
 import type { Asset, Design, Layer, PartsPaint } from './types'
 
-export type ParamKind = 'text' | 'color' | 'image'
+export type ParamKind = 'text' | 'color' | 'image' | 'flag'
+
+/** Value of a flag parameter: `flag:` and an ISO 3166 code (flag-icons naming). */
+export const FLAG_PREFIX = 'flag:'
+
+/** English country name for ui_skin.json (what Content Manager shows). */
+export function countryName(value: string): string {
+  const code = value.startsWith(FLAG_PREFIX) ? value.slice(FLAG_PREFIX.length) : value
+  if (!code) return ''
+  try {
+    return new Intl.DisplayNames(['en'], { type: 'region' }).of(code.toUpperCase()) ?? code
+  } catch {
+    return code.toUpperCase()
+  }
+}
 
 export interface TemplateParam {
   /** Used in {placeholders} and bindings; the standard ids map to league columns. */
   id: string
   kind: ParamKind
   label: string
-  /** Text, #rrggbb colour, or an asset id (empty: no image). */
+  /** Text, #rrggbb colour, an asset id or flag:<code> (empty: no image). */
   default: string
 }
 
@@ -26,6 +40,7 @@ export const STANDARD_PARAMS: readonly TemplateParam[] = [
   { id: 'sponsor1', kind: 'image', label: 'Sponsor 1', default: '' },
   { id: 'sponsor2', kind: 'image', label: 'Sponsor 2', default: '' },
   { id: 'sponsor3', kind: 'image', label: 'Sponsor 3', default: '' },
+  { id: 'country', kind: 'flag', label: 'Country', default: '' },
 ]
 
 /** Properties of a layer that can follow a parameter. */
@@ -71,6 +86,16 @@ function boundColor(
   return v && HEX.test(v) ? v : current
 }
 
+/** Parameter values as they read inside texts: a flag becomes its country name. */
+export function textValues(
+  params: readonly TemplateParam[],
+  values: Readonly<Record<string, string>>,
+): Record<string, string> {
+  const texts = paramValues(params, values)
+  for (const p of params) if (p.kind === 'flag') texts[p.id] = countryName(texts[p.id] ?? '')
+  return texts
+}
+
 /** A layer with its parameters filled in. */
 export function resolveLayer(
   layer: Layer,
@@ -90,8 +115,9 @@ export function resolveLayer(
       }
     case 'image': {
       const asset = b.asset ? values[b.asset] : undefined
+      const known = !!asset && (!!assets[asset] || asset.startsWith(FLAG_PREFIX))
       // an empty image parameter hides the slot
-      if (b.asset && !(asset && assets[asset])) return { ...layer, visible: false }
+      if (b.asset && !known) return { ...layer, visible: false }
       return asset ? { ...layer, asset } : layer
     }
   }
@@ -116,6 +142,7 @@ export function resolveDraft<D extends ResolvableDraft>(draft: D): D {
   const params = draft.params ?? []
   if (!params.length) return draft
   const values = paramValues(params, draft.values)
+  const texts = textValues(params, values)
   const b = draft.bindings ?? {}
   const assets = draft.design.assets
   return {
@@ -123,7 +150,10 @@ export function resolveDraft<D extends ResolvableDraft>(draft: D): D {
     baseColor: boundColor(draft.baseColor, b.baseColor, values),
     design: {
       ...draft.design,
-      layers: draft.design.layers.map((l) => resolveLayer(l, values, assets)),
+      layers: draft.design.layers.map((l) => {
+        const r = resolveLayer(l, values, assets)
+        return r.kind === 'text' && l.kind === 'text' ? { ...r, text: fillText(l.text, texts) } : r
+      }),
     },
     parts: {
       rims: { ...draft.parts.rims, color: boundColor(draft.parts.rims.color, b.rims, values) },
@@ -139,7 +169,7 @@ export function resolveDraft<D extends ResolvableDraft>(draft: D): D {
       colorB: boundColor(draft.csp.colorB, b.cspColorB, values),
     },
     meta: Object.fromEntries(
-      Object.entries(draft.meta).map(([k, v]) => [k, fillText(v, values)]),
+      Object.entries(draft.meta).map(([k, v]) => [k, fillText(v, texts)]),
     ) as D['meta'],
   }
 }

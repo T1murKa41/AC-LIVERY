@@ -1,7 +1,9 @@
 // Draws vinyl layers (shapes, text, images) into canvases that become the
 // textures of their projectors.
 
+import { FLAG_PREFIX } from '@shared/design/params'
 import { dataUrlToBytes } from '@shared/design/project'
+import { flagDataUrl } from './flags'
 import {
   fontAssetId,
   type Asset,
@@ -18,15 +20,19 @@ const images = new Map<string, Promise<HTMLImageElement>>()
 const fonts = new Map<string, Promise<string>>()
 
 function loadImage(asset: Asset): Promise<HTMLImageElement> {
-  let p = images.get(asset.data)
+  return loadImageUrl(asset.data, asset.name)
+}
+
+function loadImageUrl(url: string, name: string): Promise<HTMLImageElement> {
+  let p = images.get(url)
   if (!p) {
     p = new Promise((resolve, reject) => {
       const img = new Image()
       img.onload = () => resolve(img)
-      img.onerror = () => reject(new Error(`Cannot decode image ${asset.name}`))
-      img.src = asset.data
+      img.onerror = () => reject(new Error(`Cannot decode image ${name}`))
+      img.src = url
     })
-    images.set(asset.data, p)
+    images.set(url, p)
   }
   return p
 }
@@ -233,7 +239,10 @@ export async function rasterize(
       break
     }
     case 'image': {
-      const asset = assets[layer.asset]
+      const flag = layer.asset.startsWith(FLAG_PREFIX)
+      const asset: Asset | undefined = flag
+        ? { name: layer.asset, mime: 'image/svg+xml', data: await flagDataUrl(layer.asset) }
+        : assets[layer.asset]
       if (!asset) throw new Error(`Missing image ${layer.asset}`)
       const img = await loadImage(asset)
       const w = img.naturalWidth || 512

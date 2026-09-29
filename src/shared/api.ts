@@ -92,6 +92,14 @@ export interface TemplateInfo {
   preview?: Uint8Array
 }
 
+/** A logo in the user's sticker library. */
+export interface StickerFile {
+  id: string
+  name: string
+  mime: string
+  data: Uint8Array
+}
+
 export interface ProjectFile {
   /** Where the project lives (an absolute path in the desktop app). */
   path: string
@@ -124,6 +132,9 @@ export interface Backend {
   ): Promise<string | null>
   /** Lets the user pick a project file; null when cancelled. */
   openProject(): Promise<ProjectFile | null>
+  listStickers(): Promise<StickerFile[]>
+  addSticker(name: string, mime: string, data: Uint8Array): Promise<StickerFile>
+  deleteSticker(id: string): Promise<void>
   listTemplates(): Promise<TemplateInfo[]>
   readTemplate(id: string): Promise<Uint8Array>
   /** Stores a template file under a new id. */

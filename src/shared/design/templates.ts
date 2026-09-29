@@ -146,7 +146,7 @@ function text(
   }
 }
 
-/** Empty slot for a sponsor logo; hidden until the parameter gets an image. */
+/** Empty slot for a logo or a flag; hidden until the parameter gets an image. */
 function sponsor(placement: Placement, param: string, name: string): ImageLayer {
   return {
     id: newId(),
@@ -174,7 +174,7 @@ function content(
     design: { layers, assets: {}, groups },
     params: STANDARD_PARAMS.map((p) => ({ ...p })),
     bindings: { baseColor: 'primary' },
-    meta: { drivername: '{driver}', team: '{team}', number: '{number}' },
+    meta: { drivername: '{driver}', team: '{team}', number: '{number}', country: '{country}' },
     ...extra,
   }
 }
@@ -210,6 +210,7 @@ export const BUILTIN_TEMPLATES: BuiltinTemplate[] = [
           shape('rect', top(-0.13, 0, 0.045, 1.1), 'secondary', 'stripe R'),
           ...n.layers,
           text('{driver}', side({ z: -0.6, y: -0.45, w: 0.14, h: 0.025 }), 'secondary', 'driver'),
+          sponsor(side({ z: -0.41, y: -0.45, w: 0.033, h: 0.025 }), 'country', 'flag'),
         ],
         { [n.group[0]]: n.group[1] },
         { values: { primary: '#1c5fd4', secondary: '#f4f4f2', accent: '#16181b' } },
@@ -275,6 +276,7 @@ export const BUILTIN_TEMPLATES: BuiltinTemplate[] = [
           ),
           text('{number}', side({ z: 0.12, y: 0, w: 0.09, h: 0.07 }), 'primary', 'number', g),
           text('{driver}', side({ z: 0.12, y: -0.3, w: 0.12, h: 0.02 }), 'secondary', 'driver'),
+          sponsor(side({ z: 0.28, y: -0.3, w: 0.027, h: 0.02 }), 'country', 'flag'),
           sponsor(top(0, 0.62, 0.18, 0.09), 'sponsor1', 'sponsor 1 (bonnet)'),
           sponsor(side({ z: -0.5, y: 0.05, w: 0.18, h: 0.07 }), 'sponsor2', 'sponsor 2 (side)'),
           sponsor(front(-0.2, 0.2, 0.05), 'sponsor3', 'sponsor 3 (nose)'),

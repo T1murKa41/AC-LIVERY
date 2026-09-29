@@ -6,6 +6,7 @@ import {
   type Backend,
   type CarDetails,
   type CarSummary,
+  type ExportResult,
   type Language,
   type OverwriteMode,
 } from '@shared/api'
@@ -24,11 +25,24 @@ import {
 import { logEntries } from '../engine/log'
 import { buildReport, describeMesh } from '../engine/report'
 import { fileToDataUrl, fontFamily, imageAspect, textAspect } from '../engine/vinyl'
-import { packProject, projectFileName, unpackProject } from '@shared/design/project'
+import { bytesToDataUrl, packProject, projectFileName, unpackProject } from '@shared/design/project'
+import { BUILTIN_STICKERS, stickerAssetId, type Sticker } from '@shared/design/stickers'
 import { SKIN_CONFIG_FILE } from '@shared/design/csp'
+import { readTable } from '@shared/league/sheet'
 import {
+  DEFAULT_LEAGUE,
+  guessMapping,
+  newRowId,
+  rowsFromCells,
+  skinFolders,
+  type LeagueRow,
+  type LeagueTable,
+} from '@shared/league/table'
+import {
+  fillText,
   paramValues,
   resolveDraft,
+  textValues,
   resolveLayer,
   STANDARD_PARAMS,
   type DraftBindings,
@@ -110,6 +124,8 @@ export interface LiveryDraft {
   bindings?: DraftBindings
   /** Name of the template the design came from, if any. */
   template?: string
+  /** Drivers of a league and how their skins are named (missing in older drafts). */
+  league?: LeagueTable
   aoSource: AoSource
   aoStrength: number
   skinId: string
@@ -132,7 +148,7 @@ export type ExportState =
   | { status: 'done'; path: string; builtinEncoder: boolean }
   | { status: 'error'; message: string }
 
-export type PanelTab = 'skins' | 'livery' | 'info'
+export type PanelTab = 'skins' | 'livery' | 'league' | 'info'
 
 export const DEFAULT_DRAFT: LiveryDraft = {
   liveryTextures: 'auto',
@@ -233,6 +249,15 @@ interface State {
   cspMaterials: string[]
   /** Templates saved by the user, newest first. */
   userTemplates: UserTemplate[]
+  /** Built-in stickers first, then the user's library. */
+  stickers: Sticker[]
+  /** A table file being matched to parameters before it becomes league rows. */
+  leagueImport: LeagueImport | null
+  leagueRun: LeagueRun
+  /** Row shown on the car in the league table. */
+  leaguePreview: string | null
+  /** The league table is open over the viewport. */
+  leagueTableOpen: boolean
   templateMessage: { kind: 'ok' | 'error'; text: string } | null
   /** Project file the draft was last opened from or saved to. */
   projectPath: string | null
@@ -241,6 +266,41 @@ interface State {
   /** Unsaved work found at start-up, offered for restoring. */
   recovery: Recovery | null
   projectError: string | null
+}
+
+export interface LeagueImport {
+  fileName: string
+  cells: string[][]
+  /** Parameter id per column, null to ignore it. */
+  mapping: (string | null)[]
+  header: boolean
+}
+
+export interface LeagueResult {
+  car: string
+  skin: string
+  driver: string
+  ok: boolean
+  message?: string
+}
+
+export interface LeagueRun {
+  status: 'idle' | 'running' | 'done' | 'cancelled'
+  done: number
+  total: number
+  current: string | null
+  results: LeagueResult[]
+  /** Cells a table import could not read. */
+  problems: { row: number; column: string; value: string }[]
+}
+
+const IDLE_RUN: LeagueRun = {
+  status: 'idle',
+  done: 0,
+  total: 0,
+  current: null,
+  results: [],
+  problems: [],
 }
 
 export interface UserTemplate {
@@ -327,6 +387,29 @@ interface Actions {
   applyTemplate(template: TemplateDraft): void
   /** Shows a template on the car without applying it; null goes back to the draft. */
   previewTemplate(template: TemplateDraft | null): void
+  updateLeague(patch: Partial<Omit<LeagueTable, 'rows'>>): void
+  addLeagueRow(): void
+  updateLeagueRow(id: string, values: Record<string, string>): void
+  removeLeagueRow(id: string): void
+  clearLeague(): void
+  /** Reads a CSV/XLSX file and proposes a column mapping. */
+  openLeagueFile(file: File): Promise<void>
+  setImportMapping(column: number, paramId: string | null): void
+  setImportHeader(header: boolean): void
+  confirmImport(mode: 'replace' | 'append'): void
+  cancelImport(): void
+  previewLeagueRow(id: string | null): void
+  /** Generates a skin for every row (and every chosen car). */
+  runLeague(): Promise<void>
+  cancelLeague(): void
+  dismissLeagueRun(): void
+  setLeagueTableOpen(open: boolean): void
+  loadStickers(): Promise<void>
+  addToLibrary(files: File[]): Promise<void>
+  removeFromLibrary(id: string): Promise<void>
+  /** Copies a sticker into the design (once) and returns its asset id. */
+  stickerAsset(sticker: Sticker): Promise<string>
+  addStickerLayer(sticker: Sticker): Promise<void>
   loadTemplates(): Promise<void>
   userTemplate(id: string): Promise<TemplateDraft | null>
   saveAsTemplate(name: string): Promise<void>
@@ -355,6 +438,11 @@ const vsub = (a: V3, b: V3): V3 => [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
 const vscale = (a: V3, k: number): V3 => [a[0] * k, a[1] * k, a[2] * k]
 const vdot = (a: V3, b: V3): number => a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 
+/** Tabs that show the livery being made on the car. */
+function showsLivery(tab: PanelTab): boolean {
+  return tab === 'livery' || tab === 'league'
+}
+
 /** The draft with its template parameters filled in: what gets baked and exported. */
 function resolved(d: LiveryDraft): LiveryDraft {
   return resolveDraft({ ...d, parts: d.parts ?? DEFAULT_PARTS, csp: d.csp ?? DEFAULT_CSP })
@@ -363,7 +451,10 @@ function resolved(d: LiveryDraft): LiveryDraft {
 /** Asset ids a draft's parameters point to; they survive removing layers. */
 function paramAssets(d: LiveryDraft): string[] {
   const imageParams = (d.params ?? []).filter((p) => p.kind === 'image')
-  return imageParams.flatMap((p) => [p.default, d.values?.[p.id] ?? '']).filter(Boolean)
+  const rows = d.league?.rows ?? []
+  return imageParams
+    .flatMap((p) => [p.default, d.values?.[p.id] ?? '', ...rows.map((r) => r.values[p.id] ?? '')])
+    .filter(Boolean)
 }
 
 /** Visual properties of any layer kind that can be edited. */
@@ -396,6 +487,7 @@ let bakeRunning: Promise<void> | null = null
 let cleanDraft: LiveryDraft = DEFAULT_DRAFT
 /** A template shown on the car while the pointer rests on it in the gallery. */
 let previewDraft: LiveryDraft | null = null
+let leagueCancelled = false
 /** User templates already read from disk, by id. */
 const templateCache = new Map<string, TemplateDraft>()
 const AUTOSAVE_DELAY = 1500
@@ -403,8 +495,9 @@ const AUTOSAVE_DELAY = 1500
 export const useStore = create<State & Actions>((set, get) => {
   const bakeOnce = async (): Promise<void> => {
     const { analysis, tab } = get()
-    if (!engine || !analysis || tab !== 'livery') return
-    const draft = resolved(previewDraft ?? get().draft)
+    if (!engine || !analysis || (tab !== 'livery' && tab !== 'league')) return
+    const active = previewDraft ?? get().draft
+    const draft = resolved(active)
     const needsAo = draft.aoSource !== 'none' && draft.aoStrength > 0
     if (needsAo) set({ aoStatus: 'working' })
     try {
@@ -415,8 +508,8 @@ export const useStore = create<State & Actions>((set, get) => {
         csp: draft.csp ?? DEFAULT_CSP,
         aoSource: draft.aoSource,
         aoStrength: draft.aoStrength,
-        textures: get().paintedTextures(),
-        baseSkin: get().baseSkinId(),
+        textures: paintedFor(active),
+        baseSkin: baseSkinFor(active),
         design: draft.design,
         cleared: draft.clearedTextures ?? [],
       })
@@ -466,6 +559,66 @@ export const useStore = create<State & Actions>((set, get) => {
     set({
       past: [...past, snapshot(draft)].slice(-100),
       future: [],
+    })
+  }
+
+  const paintedFor = (d: LiveryDraft): string[] =>
+    resolvePaintedTextures(d, get().liveryCandidates, get().autoLivery)
+
+  const baseSkinFor = (d: LiveryDraft): string | null => {
+    const { car, shownSkin } = get()
+    if (d.baseSkin === 'model') return null
+    const wanted = d.baseSkin === 'auto' ? shownSkin : d.baseSkin
+    return car?.skins.some((s) => s.id === wanted) ? wanted : null
+  }
+
+  /**
+   * Bakes a draft (the one being edited unless another is given) and writes
+   * it to the game as `skinId` of the car that is open.
+   */
+  const exportDraft = async (
+    d: LiveryDraft,
+    skinId: string,
+    mode: OverwriteMode,
+  ): Promise<ExportResult> => {
+    const { car, backend } = get()
+    if (!engine || !car) throw new Error('No car is open')
+    const isDraft = d === get().draft
+    // make sure the texture on screen is the one that gets saved
+    if (!isDraft || previewDraft || bakeRunning || !engine.hasLivery) {
+      previewDraft = isDraft ? null : d
+      await rebake()
+    }
+    const r = resolved(d)
+    const painted = paintedFor(d)
+    const extConfig = await engine.cspConfig(r.csp ?? DEFAULT_CSP, painted, baseSkinFor(d))
+    const extraFiles = extConfig
+      ? [{ name: SKIN_CONFIG_FILE, data: new TextEncoder().encode(extConfig) }]
+      : []
+    const { textures, copyFiles } = engine.exportPayload(extraFiles.map((f) => f.name))
+    if (!textures.length) throw new Error(i18n.t('livery.noTexture'))
+    const preview = await engine.previewSize()
+    const previewJpg = await encodeImage(
+      engine.capturePreview(preview.width, preview.height),
+      preview.width,
+      preview.height,
+      'image/jpeg',
+    )
+    const icon = await engine.liveryIconSize()
+    const liveryPng = await renderLiveryIcon(icon.width, icon.height, r.baseColor)
+    const meta = Object.fromEntries(Object.entries(r.meta).filter(([, v]) => v.trim() !== ''))
+    return backend.exportSkin({
+      carId: car.id,
+      skinId,
+      textures,
+      copyFiles,
+      extraFiles,
+      encoding: 'auto',
+      uiSkin: { skinname: skinId, ...meta },
+      previewJpg,
+      liveryPng,
+      overwrite: mode,
+      project: { version: 1, draft: d },
     })
   }
 
@@ -548,6 +701,16 @@ export const useStore = create<State & Actions>((set, get) => {
     setDesign({ ...design, layers: [...design.layers, layer] })
   }
 
+  /** Copies a sticker into the design once; returns its asset id. */
+  const stickerAssetSync = (sticker: Sticker): string => {
+    const id = stickerAssetId(sticker)
+    if (!get().draft.design.assets[id]) {
+      const ext = sticker.mime.includes('svg') ? 'svg' : sticker.mime.split('/')[1] || 'png'
+      addAsset(id, { name: `${sticker.name}.${ext}`, mime: sticker.mime, data: sticker.data })
+    }
+    return id
+  }
+
   const markClean = (): void => {
     cleanDraft = get().draft
     set({ dirty: false })
@@ -623,6 +786,11 @@ export const useStore = create<State & Actions>((set, get) => {
     carParts: null,
     cspMaterials: [],
     userTemplates: [],
+    stickers: BUILTIN_STICKERS,
+    leagueImport: null,
+    leagueRun: IDLE_RUN,
+    leaguePreview: null,
+    leagueTableOpen: false,
     templateMessage: null,
     projectPath: null,
     dirty: false,
@@ -641,6 +809,7 @@ export const useStore = create<State & Actions>((set, get) => {
         ),
       })
       void get().loadTemplates()
+      void get().loadStickers()
       if (settings.acRoot) await get().loadCars()
     },
 
@@ -736,7 +905,7 @@ export const useStore = create<State & Actions>((set, get) => {
           carParts: engine.carParts(),
         })
         engine.setPaintFilter(get().paintedTextures())
-        if (get().tab === 'livery') void rebake()
+        if (showsLivery(get().tab)) void rebake()
       } catch (err) {
         const kind = (err as { kind?: string }).kind
         if (kind === 'cancelled') return
@@ -755,9 +924,10 @@ export const useStore = create<State & Actions>((set, get) => {
       const prev = get().tab
       set({ tab })
       if (tab !== 'info' && get().pickedMesh !== null) get().clearPick()
-      if (tab === 'livery' && prev !== 'livery') void rebake()
+      if (prev === 'league' && tab !== 'league' && get().leaguePreview) get().previewLeagueRow(null)
+      if (showsLivery(tab) && !showsLivery(prev)) void rebake()
       refreshOutline()
-      if (tab !== 'livery' && prev === 'livery') void get().showSkin(get().shownSkin)
+      if (!showsLivery(tab) && showsLivery(prev)) void get().showSkin(get().shownSkin)
     },
 
     async showSkin(skinId) {
@@ -859,45 +1029,7 @@ export const useStore = create<State & Actions>((set, get) => {
       }
       set({ exportState: { status: 'working' } })
       try {
-        // make sure the texture on screen is the one that gets saved
-        if (previewDraft || bakeRunning || !engine.hasLivery) {
-          previewDraft = null
-          await rebake()
-        }
-        const r = resolved(draft)
-        const extConfig = await engine.cspConfig(
-          r.csp ?? DEFAULT_CSP,
-          get().paintedTextures(),
-          get().baseSkinId(),
-        )
-        const extraFiles = extConfig
-          ? [{ name: SKIN_CONFIG_FILE, data: new TextEncoder().encode(extConfig) }]
-          : []
-        const { textures, copyFiles } = engine.exportPayload(extraFiles.map((f) => f.name))
-        if (!textures.length) throw new Error(i18n.t('livery.noTexture'))
-        const preview = await engine.previewSize()
-        const previewJpg = await encodeImage(
-          engine.capturePreview(preview.width, preview.height),
-          preview.width,
-          preview.height,
-          'image/jpeg',
-        )
-        const icon = await engine.liveryIconSize()
-        const liveryPng = await renderLiveryIcon(icon.width, icon.height, r.baseColor)
-        const meta = Object.fromEntries(Object.entries(r.meta).filter(([, v]) => v.trim() !== ''))
-        const result = await backend.exportSkin({
-          carId: car.id,
-          skinId: draft.skinId,
-          textures,
-          copyFiles,
-          extraFiles,
-          encoding: 'auto',
-          uiSkin: { skinname: draft.skinId, ...meta },
-          previewJpg,
-          liveryPng,
-          overwrite: mode,
-          project: { version: 1, draft },
-        })
+        const result = await exportDraft(draft, draft.skinId, mode)
         if (!result.ok) {
           set({ exportState: { status: 'error', message: result.message } })
           return
@@ -942,15 +1074,11 @@ export const useStore = create<State & Actions>((set, get) => {
     },
 
     paintedTextures() {
-      const { draft, liveryCandidates, autoLivery } = get()
-      return resolvePaintedTextures(draft, liveryCandidates, autoLivery)
+      return paintedFor(get().draft)
     },
 
     baseSkinId() {
-      const { draft, car, shownSkin } = get()
-      if (draft.baseSkin === 'model') return null
-      const wanted = draft.baseSkin === 'auto' ? shownSkin : draft.baseSkin
-      return car?.skins.some((s) => s.id === wanted) ? wanted : null
+      return baseSkinFor(get().draft)
     },
 
     setShowHidden(show) {
@@ -1445,6 +1573,300 @@ export const useStore = create<State & Actions>((set, get) => {
       void rebake()
     },
 
+    updateLeague(patch) {
+      const league = get().draft.league ?? DEFAULT_LEAGUE
+      set({ draft: { ...get().draft, league: { ...league, ...patch } } })
+    },
+
+    addLeagueRow() {
+      const league = get().draft.league ?? DEFAULT_LEAGUE
+      const row: LeagueRow = { id: newRowId(), values: {} }
+      set({ draft: { ...get().draft, league: { ...league, rows: [...league.rows, row] } } })
+    },
+
+    updateLeagueRow(id, values) {
+      const league = get().draft.league ?? DEFAULT_LEAGUE
+      const rows = league.rows.map((r) =>
+        r.id === id ? { ...r, values: { ...r.values, ...values } } : r,
+      )
+      set({ draft: { ...get().draft, league: { ...league, rows } } })
+      if (get().leaguePreview === id) get().previewLeagueRow(id)
+    },
+
+    removeLeagueRow(id) {
+      const league = get().draft.league ?? DEFAULT_LEAGUE
+      const rows = league.rows.filter((r) => r.id !== id)
+      set({ draft: { ...get().draft, league: { ...league, rows } } })
+      if (get().leaguePreview === id) get().previewLeagueRow(null)
+    },
+
+    clearLeague() {
+      const league = get().draft.league ?? DEFAULT_LEAGUE
+      set({ draft: { ...get().draft, league: { ...league, rows: [] } } })
+      get().previewLeagueRow(null)
+    },
+
+    async openLeagueFile(file) {
+      try {
+        const cells = readTable(new Uint8Array(await file.arrayBuffer()), file.name)
+        if (!cells.length) throw new Error(i18n.t('league.emptyFile'))
+        const params = get().draft.params ?? []
+        set({
+          leagueTableOpen: true,
+          leagueImport: {
+            fileName: file.name,
+            cells,
+            mapping: guessMapping(cells[0]!, params),
+            header: true,
+          },
+          leagueRun: { ...get().leagueRun, problems: [] },
+        })
+      } catch (err) {
+        console.error(err)
+        set({ designError: err instanceof Error ? err.message : String(err) })
+      }
+    },
+
+    setImportMapping(column, paramId) {
+      const im = get().leagueImport
+      if (!im) return
+      const mapping = im.mapping.map((m, i) =>
+        i === column ? paramId : m === paramId && paramId ? null : m,
+      )
+      set({ leagueImport: { ...im, mapping } })
+    },
+
+    setImportHeader(header) {
+      const im = get().leagueImport
+      if (im) set({ leagueImport: { ...im, header } })
+    },
+
+    confirmImport(mode) {
+      const im = get().leagueImport
+      if (!im) return
+      const draft = get().draft
+      const params = draft.params ?? []
+      // image cells name a sticker of the library or an image of the design
+      const { stickers } = get()
+      const assets = draft.design.assets
+      const resolveImage = (value: string): string | null => {
+        const v = value
+          .trim()
+          .toLowerCase()
+          .replace(/\.(png|jpe?g|webp|svg)$/, '')
+        const sticker = stickers.find((s) => s.name.toLowerCase() === v)
+        if (sticker) return stickerAssetSync(sticker)
+        const own = Object.entries(get().draft.design.assets).find(
+          ([, a]) => a.name.toLowerCase().replace(/\.[^.]+$/, '') === v,
+        )
+        return own?.[0] ?? (assets[value] ? value : null)
+      }
+      const { rows, problems } = rowsFromCells(im.cells, im.mapping, params, {
+        header: im.header,
+        resolveImage,
+      })
+      const league = get().draft.league ?? DEFAULT_LEAGUE
+      set({
+        draft: {
+          ...get().draft,
+          league: { ...league, rows: mode === 'append' ? [...league.rows, ...rows] : rows },
+        },
+        leagueImport: null,
+        leagueRun: { ...IDLE_RUN, problems },
+      })
+    },
+
+    cancelImport() {
+      set({ leagueImport: null })
+    },
+
+    previewLeagueRow(id) {
+      set({ leaguePreview: id })
+      const draft = get().draft
+      const row = id ? draft.league?.rows.find((r) => r.id === id) : undefined
+      previewDraft = row ? { ...draft, values: { ...draft.values, ...row.values } } : null
+      void rebake()
+    },
+
+    async runLeague() {
+      const st = get()
+      const draft = st.draft
+      const league = draft.league ?? DEFAULT_LEAGUE
+      if (!engine || !st.car || !league.rows.length || st.leagueRun.status === 'running') return
+      const homeCar = st.car.id
+      const cars = league.cars.length ? league.cars : [homeCar]
+      const params = draft.params ?? []
+      leagueCancelled = false
+      set({
+        leaguePreview: null,
+        leagueRun: {
+          ...IDLE_RUN,
+          status: 'running',
+          total: league.rows.length * cars.length,
+        },
+      })
+      const results: LeagueResult[] = []
+      const push = (r: LeagueResult) => {
+        results.push(r)
+        set({ leagueRun: { ...get().leagueRun, done: results.length, results: [...results] } })
+      }
+      const display = (row: LeagueRow) => textValues(params, { ...draft.values, ...row.values })
+      const folders = skinFolders(league.rows, league.folder, display)
+      try {
+        for (const carId of cars) {
+          if (leagueCancelled) break
+          const carName = get().cars.find((c) => c.id === carId)?.name ?? carId
+          if (get().car?.id !== carId) await get().selectCar(carId)
+          if (get().car?.id !== carId || get().load.status !== 'ready') {
+            for (const row of league.rows) {
+              push({
+                car: carName,
+                skin: '',
+                driver: display(row).driver ?? '',
+                ok: false,
+                message: i18n.t('league.carFailed'),
+              })
+            }
+            continue
+          }
+          for (const [i, row] of league.rows.entries()) {
+            if (leagueCancelled) break
+            const skinId = folders[i]!
+            const names = display(row)
+            set({ leagueRun: { ...get().leagueRun, current: `${carName}: ${skinId}` } })
+            const rowDraft: LiveryDraft = {
+              ...draft,
+              // texture choices belong to the car the design was made on
+              ...(carId === homeCar
+                ? {}
+                : { liveryTextures: 'auto' as const, baseSkin: 'auto', clearedTextures: [] }),
+              values: { ...draft.values, ...row.values },
+              meta: { ...draft.meta, skinname: fillText(league.skinName, names) },
+              skinId,
+              skinIdTouched: true,
+            }
+            try {
+              const status = await get().backend.checkSkin(carId, skinId)
+              if (status.exists && !status.ours) {
+                push({
+                  car: carName,
+                  skin: skinId,
+                  driver: names.driver ?? '',
+                  ok: false,
+                  message: i18n.t('league.foreign'),
+                })
+                continue
+              }
+              const result = await exportDraft(rowDraft, skinId, 'ours')
+              push({
+                car: carName,
+                skin: skinId,
+                driver: names.driver ?? '',
+                ok: result.ok,
+                message: result.ok ? undefined : result.message,
+              })
+            } catch (err) {
+              console.error(err)
+              push({
+                car: carName,
+                skin: skinId,
+                driver: names.driver ?? '',
+                ok: false,
+                message: err instanceof Error ? err.message : String(err),
+              })
+            }
+          }
+          const updated = await get().backend.getCar(carId)
+          engine?.updateCarDetails(updated)
+          set({ car: updated })
+        }
+      } finally {
+        previewDraft = null
+        if (get().car?.id !== homeCar) await get().selectCar(homeCar)
+        else void rebake()
+        set({
+          leagueRun: {
+            ...get().leagueRun,
+            status: leagueCancelled ? 'cancelled' : 'done',
+            current: null,
+          },
+        })
+        void get().loadCars()
+      }
+    },
+
+    cancelLeague() {
+      leagueCancelled = true
+    },
+
+    dismissLeagueRun() {
+      set({ leagueRun: IDLE_RUN })
+    },
+
+    setLeagueTableOpen(open) {
+      set({ leagueTableOpen: open })
+      if (!open && get().leaguePreview) get().previewLeagueRow(null)
+    },
+
+    async loadStickers() {
+      try {
+        const user = await get().backend.listStickers()
+        set({
+          stickers: [
+            ...BUILTIN_STICKERS,
+            ...user.map((u) => ({
+              id: u.id,
+              name: u.name,
+              mime: u.mime,
+              data: bytesToDataUrl(u.data, u.mime),
+            })),
+          ],
+        })
+      } catch (err) {
+        console.error(err)
+      }
+    },
+
+    async addToLibrary(files) {
+      try {
+        for (const file of files) {
+          const bytes = new Uint8Array(await file.arrayBuffer())
+          const mime = file.type || (/\.svg$/i.test(file.name) ? 'image/svg+xml' : 'image/png')
+          // check it decodes before it goes into the library
+          await imageAspect({ name: file.name, mime, data: bytesToDataUrl(bytes, mime) })
+          await get().backend.addSticker(file.name.replace(/\.[^.]+$/, ''), mime, bytes)
+        }
+        set({ designError: null })
+      } catch (err) {
+        set({ designError: err instanceof Error ? err.message : String(err) })
+      }
+      await get().loadStickers()
+    },
+
+    async removeFromLibrary(id) {
+      await get().backend.deleteSticker(id)
+      await get().loadStickers()
+    },
+
+    async stickerAsset(sticker) {
+      return stickerAssetSync(sticker)
+    },
+
+    async addStickerLayer(sticker) {
+      try {
+        const aspect = await imageAspect({
+          name: sticker.name,
+          mime: sticker.mime,
+          data: sticker.data,
+        })
+        const id = await get().stickerAsset(sticker)
+        addLayer(newImageLayer(id, sticker.name, initialPlacement(0.16), aspect))
+        set({ designError: null })
+      } catch (err) {
+        set({ designError: err instanceof Error ? err.message : String(err) })
+      }
+    },
+
     async loadTemplates() {
       try {
         const list = await get().backend.listTemplates()
@@ -1835,6 +2257,13 @@ export function normalizeDraft(raw: unknown): LiveryDraft {
       glass: { ...DEFAULT_PARTS.glass, ...asRecord(parts.glass) },
     },
     csp: { ...DEFAULT_CSP, ...asRecord(stored.csp) },
+    league: {
+      ...DEFAULT_LEAGUE,
+      ...(asRecord(stored.league) as Partial<LeagueTable>),
+      rows: Array.isArray(asRecord(stored.league).rows)
+        ? (asRecord(stored.league).rows as LeagueRow[])
+        : [],
+    },
     design: {
       layers: Array.isArray(design.layers) ? design.layers : [],
       assets: asRecord(design.assets) as Design['assets'],

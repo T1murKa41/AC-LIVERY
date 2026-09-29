@@ -9,6 +9,7 @@ import {
   type CarDetails,
   type CarSummary,
   type SkinInfo,
+  type StickerFile,
 } from '@shared/api'
 import { buildSyntheticCar, type SyntheticCarOptions } from '@shared/fixtures/syntheticCar'
 import { peekTemplate } from '@shared/design/project'
@@ -51,6 +52,8 @@ export function createMockBackend(): Backend {
   let lastProject: string | null = null
   const templates = new Map<string, { bytes: Uint8Array; savedAt: number }>()
   let templateCounter = 0
+  const stickers = new Map<string, StickerFile>()
+  let stickerCounter = 0
 
   const children = (prefix: string) => {
     const dirs = new Set<string>()
@@ -184,6 +187,17 @@ export function createMockBackend(): Backend {
     async openProject() {
       const bytes = lastProject ? files.get(lastProject) : undefined
       return lastProject && bytes ? { path: lastProject, bytes } : null
+    },
+    async listStickers() {
+      return [...stickers.values()]
+    },
+    async addSticker(name, mime, data) {
+      const sticker = { id: `s${++stickerCounter}`, name, mime, data }
+      stickers.set(sticker.id, sticker)
+      return sticker
+    },
+    async deleteSticker(id) {
+      stickers.delete(id)
     },
     async listTemplates() {
       return [...templates.entries()]

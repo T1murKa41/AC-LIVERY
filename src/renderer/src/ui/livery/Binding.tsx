@@ -12,10 +12,10 @@ export function useParamLabel(): (p: TemplateParam) => string {
   return (p) => (STANDARD_IDS.has(p.id) ? t(`params.standard.${p.id}`) : p.label)
 }
 
-/** Template parameters of one kind. */
+/** Template parameters of one kind (images also take flags). */
 export function useParams(kind: ParamKind): TemplateParam[] {
   const params = useStore((s) => s.draft.params ?? NO_PARAMS)
-  return params.filter((p) => p.kind === kind)
+  return params.filter((p) => p.kind === kind || (kind === 'image' && p.kind === 'flag'))
 }
 
 /** Picks the template parameter a property follows (hidden without parameters). */

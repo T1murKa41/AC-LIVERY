@@ -15,6 +15,7 @@ import { useStore, type AlignMode, type SelectMode } from '../../state/store'
 import { BindSelect, BoundColor, useParams } from './Binding'
 import { ShapeIcon } from './ShapeIcon'
 import { Slider } from './Slider'
+import { StickerPicker } from './StickerPicker'
 
 const IMAGE_TYPES = '.png,.jpg,.jpeg,.webp,.svg,image/png,image/jpeg,image/webp,image/svg+xml'
 const FONT_TYPES = '.ttf,.otf,.woff,.woff2'
@@ -31,6 +32,8 @@ export function DesignPanel() {
   const bindDraft = useStore((s) => s.bindDraft)
   const imageInput = useRef<HTMLInputElement>(null)
   const baseFinish = draft.baseFinish ?? 'stock'
+  const [showStickers, setShowStickers] = useState(false)
+  const addStickerLayer = useStore((s) => s.addStickerLayer)
 
   return (
     <>
@@ -87,6 +90,13 @@ export function DesignPanel() {
           <button className="btn small" onClick={() => imageInput.current?.click()}>
             {t('design.addImage')}
           </button>
+          <button
+            className={`btn small ${showStickers ? 'active' : ''}`}
+            aria-expanded={showStickers}
+            onClick={() => setShowStickers((v) => !v)}
+          >
+            {t('stickers.open')}
+          </button>
           <input
             ref={imageInput}
             type="file"
@@ -99,6 +109,7 @@ export function DesignPanel() {
             }}
           />
         </div>
+        {showStickers && <StickerPicker onPick={(s) => void addStickerLayer(s)} />}
         {error && <p className="notice error">{error}</p>}
         <p className="hint">{t('design.mouseHint')}</p>
       </section>

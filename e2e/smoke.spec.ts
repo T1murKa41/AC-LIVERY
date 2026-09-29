@@ -23,7 +23,7 @@ async function openCar(page: Page, text?: string) {
   await expect(page.locator('.view-toolbar')).toBeVisible({ timeout: 60_000 })
 }
 
-type PixelTest = 'white' | 'light' | 'blue' | 'orange'
+type PixelTest = 'white' | 'light' | 'blue' | 'orange' | 'red'
 
 /** Share of preview pixels of a kind, decoded in the page. */
 async function previewShare(page: Page, dir: string, kind: PixelTest): Promise<number> {
@@ -48,7 +48,9 @@ async function previewShare(page: Page, dir: string, kind: PixelTest): Promise<n
               ? r > 120 && g > 120 && b > 120 && Math.abs(r - b) < 30
               : kind === 'blue'
                 ? b > r + 50 && b > g + 20
-                : r > 230 && g > 70 && g < 110 && b < 60
+                : kind === 'red'
+                  ? r > g + 70 && r > b + 70 && g < 90
+                  : r > 230 && g > 70 && g < 110 && b < 60
         if (hit) n++
       }
       return n / (px.length / 4)
@@ -108,7 +110,7 @@ test('warns about shared side UVs', async ({ page }) => {
   await page.goto('/')
   await page.locator('.car-item', { hasText: 'shared UV' }).click()
   await expect(page.locator('.view-toolbar')).toBeVisible({ timeout: 60_000 })
-  await page.locator('.tabs button').nth(2).click()
+  await page.locator('.tabs button', { hasText: /^(Модель|Model)$/ }).click()
   await expect(page.locator('.info .notice.warn')).toBeVisible()
 })
 
@@ -126,7 +128,7 @@ test('model tab builds a diagnostics report', async ({ page }) => {
   await page.locator('.car-item').first().click()
   await expect(page.locator('.view-toolbar')).toBeVisible({ timeout: 60_000 })
   await page.locator('.skin-main').nth(1).click()
-  await page.locator('.tabs button').nth(2).click()
+  await page.locator('.tabs button', { hasText: /^(Модель|Model)$/ }).click()
   await page.getByRole('button', { name: /Скопировать отчёт|Copy report/ }).click()
   const report = await page.locator('.report-text').inputValue()
   expect(report).toContain('AC Livery diagnostics')
@@ -597,4 +599,81 @@ test('templates: preview, apply with parameters, save and reuse', async ({ page 
   await expect(page.locator('.params h3')).toContainText('My League')
   // values typed before survive switching templates
   await expect(page.getByRole('textbox', { name: /^(Номер|Number)/ })).toHaveValue('144')
+})
+
+test('stickers from the library become layers and sponsor values', async ({ page }) => {
+  await openCar(page)
+  await page.locator('.tabs button').nth(1).click()
+  await page.getByRole('button', { name: /^(Наклейки…|Stickers…)$/ }).click()
+  await expect(page.locator('.sticker-thumb')).toHaveCount(16)
+  await page.locator('.sticker-thumb').nth(1).click() // Nitro X
+  await expect(page.locator('.layer-row')).toHaveCount(1)
+  await expect(page.locator('.layer-row')).toContainText('Nitro X')
+
+  // an own logo goes into the library and stays there
+  const svg =
+    '<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100"><rect width="200" height="100" fill="#0f0"/></svg>'
+  await page
+    .locator('.sticker-picker input[type=file]')
+    .setInputFiles({ name: 'My Logo.svg', mimeType: 'image/svg+xml', buffer: Buffer.from(svg) })
+  await expect(page.locator('.sticker-thumb')).toHaveCount(17)
+  await expect(page.locator('.sticker-thumb').last()).toHaveAttribute('title', 'My Logo')
+})
+
+test('league: import a table and generate skins for two cars', async ({ page }) => {
+  await openCar(page)
+  await page.locator('.tabs button').nth(1).click()
+  await panel(page, 'template')
+  await page
+    .locator('.template-card')
+    .nth(2)
+    .getByRole('button', { name: /Применить|Apply/ })
+    .click()
+  await page.locator('.tabs button', { hasText: /^(Лига|League)$/ }).click()
+
+  const csv =
+    'Номер;Пилот;Команда;Цвет;Страна;Спонсор\n7;Иван Петров;Red Bears;red;Россия;Apex Tyres\n12;Ann Lee;Blue Owls;#1c5fd4;FIN;Nitro X\n'
+  await page
+    .locator('.league input[type=file]')
+    .setInputFiles({ name: 'drivers.csv', mimeType: 'text/csv', buffer: Buffer.from(csv) })
+  await expect(page.locator('.league-table.mapping select')).toHaveCount(6)
+  await page.getByRole('button', { name: /Загрузить строк|Load 2 rows/ }).click()
+  await expect(page.locator('.league-table tbody tr')).toHaveCount(2)
+
+  await page.locator('.league-cars label', { hasText: '(fin)' }).locator('input').check()
+  await page.getByRole('button', { name: /Сгенерировать|Generate/ }).click()
+  await expect(page.locator('.league-report')).toBeVisible({ timeout: 120_000 })
+  await expect(page.locator('.league-report .notice')).toContainText(/4.*0/)
+
+  const skins = await page.evaluate(() => {
+    const all = (globalThis as unknown as { __aclMockFiles: Map<string, Uint8Array> })
+      .__aclMockFiles
+    const json = (path: string) => {
+      const bytes = all.get(path)
+      return bytes ? (JSON.parse(new TextDecoder().decode(bytes)) as Record<string, string>) : null
+    }
+    return {
+      ivan: json('content/cars/aclivery_test_coupe/skins/7_ivan_petrov/ui_skin.json'),
+      ann: json('content/cars/aclivery_test_fin/skins/12_ann_lee/ui_skin.json'),
+      ivanOnFin: [...all.keys()].some((k) =>
+        k.startsWith('content/cars/aclivery_test_fin/skins/7_ivan_petrov/'),
+      ),
+    }
+  })
+  expect(skins.ivan).toMatchObject({
+    skinname: '#7 Иван Петров',
+    drivername: 'Иван Петров',
+    number: '7',
+    team: 'Red Bears',
+    country: 'Russia',
+  })
+  expect(skins.ann).toMatchObject({ drivername: 'Ann Lee', country: 'Finland' })
+  expect(skins.ivanOnFin).toBe(true)
+  // the red row is red on its preview
+  expect(
+    await previewShare(page, 'content/cars/aclivery_test_coupe/skins/7_ivan_petrov/', 'red'),
+  ).toBeGreaterThan(0.05)
+  expect(
+    await previewShare(page, 'content/cars/aclivery_test_coupe/skins/12_ann_lee/', 'blue'),
+  ).toBeGreaterThan(0.05)
 })

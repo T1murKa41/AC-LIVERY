@@ -17,6 +17,7 @@ import {
   writeAutosave,
 } from './projects'
 import { builtinDdsEncoder } from './texconv'
+import { StickerStore } from './stickers'
 import { TemplateStore } from './templates'
 import { packProject } from '@shared/design/project'
 
@@ -268,6 +269,31 @@ describe('projects', () => {
     expect(await readAutosave(autosave)).toBe('{"a":1}')
     await writeAutosave(autosave, null)
     expect(await readAutosave(autosave)).toBeNull()
+  })
+})
+
+describe('sticker store', () => {
+  let dir: string
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'aclivery-stickers-'))
+  })
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true })
+  })
+
+  it('keeps logos with their names', async () => {
+    const store = new StickerStore(join(dir, 'stickers'))
+    expect(await store.list()).toEqual([])
+    const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47])
+    const a = await store.add('Shell', 'image/png', png)
+    await store.add('Logo', 'image/svg+xml', new TextEncoder().encode('<svg/>'))
+    const list = await store.list()
+    expect(list.map((s) => s.name)).toEqual(['Shell', 'Logo'])
+    expect([...list[0]!.data]).toEqual([...png])
+    await expect(store.add('x', 'application/zip', png)).rejects.toThrow(/Unsupported/)
+    await store.remove(a.id)
+    expect((await store.list()).map((s) => s.name)).toEqual(['Logo'])
+    await expect(store.remove('../index')).rejects.toThrow(/Invalid/)
   })
 })
 

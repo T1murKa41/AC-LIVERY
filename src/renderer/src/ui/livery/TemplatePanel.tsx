@@ -4,6 +4,8 @@ import type { TemplateParam } from '@shared/design/params'
 import { BUILTIN_TEMPLATES, type BuiltinTemplate } from '@shared/design/templates'
 import { useStore, type TemplateDraft, type UserTemplate } from '../../state/store'
 import { useParamLabel } from './Binding'
+import { FlagSelect } from './FlagSelect'
+import { StickerPicker } from './StickerPicker'
 import { ColorField } from './ColorField'
 
 const IMAGE_TYPES = '.png,.jpg,.jpeg,.webp,.svg,image/png,image/jpeg,image/webp,image/svg+xml'
@@ -46,7 +48,7 @@ function ParamsSection() {
           ))}
           <div className="row gap wrap">
             <span className="muted small">{t('params.add')}</span>
-            {(['text', 'color', 'image'] as const).map((kind) => (
+            {(['text', 'color', 'image', 'flag'] as const).map((kind) => (
               <button key={kind} className="btn small" onClick={() => addParam(kind)}>
                 {t(`params.kinds.${kind}`)}
               </button>
@@ -67,6 +69,8 @@ function ParamRow({ param }: { param: TemplateParam }) {
   const setImage = useStore((s) => s.setParamImage)
   const remove = useStore((s) => s.removeParam)
   const input = useRef<HTMLInputElement>(null)
+  const [library, setLibrary] = useState(false)
+  const stickerAsset = useStore((s) => s.stickerAsset)
   const current = value ?? param.default
   const label = useParamLabel()(param)
 
@@ -92,6 +96,17 @@ function ParamRow({ param }: { param: TemplateParam }) {
       </div>
     )
   }
+  if (param.kind === 'flag') {
+    return (
+      <div className="param-row">
+        <label className="field grow">
+          <span>{label}</span>
+          <FlagSelect value={current} onChange={(v) => setValue(param.id, v)} />
+        </label>
+        {removeButton}
+      </div>
+    )
+  }
   if (param.kind === 'image') {
     const asset = current ? assets[current] : undefined
     return (
@@ -101,6 +116,13 @@ function ParamRow({ param }: { param: TemplateParam }) {
           <div className="row gap">
             <button className="btn small" onClick={() => input.current?.click()}>
               {t('params.pickImage')}
+            </button>
+            <button
+              className={`btn small ${library ? 'active' : ''}`}
+              aria-expanded={library}
+              onClick={() => setLibrary((v) => !v)}
+            >
+              {t('stickers.open')}
             </button>
             <span className="muted small ellipsis">{asset?.name ?? t('params.noImage')}</span>
             {asset && (
@@ -120,6 +142,16 @@ function ParamRow({ param }: { param: TemplateParam }) {
               if (file) void setImage(param.id, file)
             }}
           />
+          {library && (
+            <StickerPicker
+              onPick={(sticker) =>
+                void stickerAsset(sticker).then((id) => {
+                  setValue(param.id, id)
+                  setLibrary(false)
+                })
+              }
+            />
+          )}
         </div>
         {removeButton}
       </div>
