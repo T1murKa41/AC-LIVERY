@@ -1,0 +1,167 @@
+// Plain-text diagnostics about a loaded car, meant to be pasted into an issue
+// or chat when a model does not look right.
+
+import type { CarDetails } from '@shared/api'
+import { isDds, parseDds } from '@shared/formats/dds'
+import type { LiveryCandidate, SkinTextureStatus } from './controller'
+import type { LogEntry } from './log'
+import type { LoadedCar } from './types'
+
+function textureFormat(data: Uint8Array): string {
+  if (data.byteLength === 0) return 'empty'
+  if (isDds(data)) {
+    try {
+      const dds = parseDds(data)
+      return `DDS ${dds.format}${dds.srgb ? ' sRGB' : ''} ${dds.width}x${dds.height} mips=${dds.mips.length}`
+    } catch (err) {
+      return `DDS error: ${err instanceof Error ? err.message : String(err)}`
+    }
+  }
+  if (data[0] === 0x89 && data[1] === 0x50) return 'PNG'
+  if (data[0] === 0xff && data[1] === 0xd8) return 'JPEG'
+  return `unknown (${[...data.subarray(0, 4)].map((b) => b.toString(16).padStart(2, '0')).join(' ')})`
+}
+
+function prop(value: number): string {
+  return Number.isInteger(value) ? String(value) : value.toFixed(3)
+}
+
+/** UV bounds of the meshes that sample a texture as their diffuse map. */
+function uvRange(loaded: LoadedCar, texture: string): string {
+  const key = texture.toLowerCase()
+  let minU = Infinity
+  let minV = Infinity
+  let maxU = -Infinity
+  let maxV = -Infinity
+  let meshes = 0
+  for (const m of loaded.meshes) {
+    const mat = loaded.materials[m.materialId]
+    const diffuse = mat?.textures.find((t) => t.name === 'txDiffuse')?.texture
+    if (diffuse?.toLowerCase() !== key) continue
+    meshes++
+    for (let i = 0; i + 1 < m.uvs.length; i += 2) {
+      minU = Math.min(minU, m.uvs[i]!)
+      maxU = Math.max(maxU, m.uvs[i]!)
+      minV = Math.min(minV, m.uvs[i + 1]!)
+      maxV = Math.max(maxV, m.uvs[i + 1]!)
+    }
+  }
+  if (!meshes || !Number.isFinite(minU)) return '-'
+  const f = (v: number) => v.toFixed(3)
+  return `u ${f(minU)}..${f(maxU)} v ${f(minV)}..${f(maxV)} (${meshes} meshes)`
+}
+
+export interface ReportInput {
+  car: CarDetails
+  loaded: LoadedCar
+  shownSkin: string | null
+  skinStatus: readonly SkinTextureStatus[]
+  candidates?: readonly LiveryCandidate[]
+  painted?: readonly string[]
+  appVersion?: string
+  gpu?: string
+  log?: readonly LogEntry[]
+}
+
+export function buildReport({
+  car,
+  loaded,
+  shownSkin,
+  skinStatus,
+  candidates = [],
+  painted = [],
+  appVersion,
+  gpu,
+  log = [],
+}: ReportInput): string {
+  const a = loaded.analysis
+  const f = a.frame
+  const lines: string[] = []
+  const push = (s = '') => lines.push(s)
+
+  push(`AC Livery diagnostics${appVersion ? ` (${appVersion})` : ''}`)
+  push(`car: ${car.id} "${car.name}" model=${car.kn5 ?? '-'} kn5 v${loaded.version}`)
+  push(`kn5 files: ${car.kn5Files.join(', ')}`)
+  if (gpu) push(`gpu: ${gpu}`)
+  push(
+    `frame: ${f.source}${f.mirrored ? ' mirrored' : ''} size=${f.length.toFixed(2)}x${f.width.toFixed(2)}x${f.height.toFixed(2)} ` +
+      `fwd=[${f.forward.map((v) => v.toFixed(2)).join(',')}] left=[${f.left.map((v) => v.toFixed(2)).join(',')}]`,
+  )
+  push(`livery texture: ${a.bodyTexture ?? '-'}  maps: ${a.bodyMapsTexture ?? '-'}`)
+  push(`paintable: ${a.paintable.join(', ') || '-'}`)
+  push(
+    `side uv overlap: ${a.sideUvOverlap === null ? '-' : a.sideUvOverlap.toFixed(3)}  flipWinding: ${a.flipWinding}  warnings: ${a.warnings.join(', ') || '-'}`,
+  )
+
+  if (candidates.length) {
+    push(
+      `livery candidates (visible share): ${candidates.map((c) => `${c.name}=${(c.visible * 100).toFixed(1)}%`).join(', ')}`,
+    )
+    push(`painted: ${painted.join(', ') || '-'}`)
+  }
+  const uvTextures = new Map(
+    [a.bodyTexture, ...painted].filter((n): n is string => !!n).map((n) => [n.toLowerCase(), n]),
+  )
+  for (const name of uvTextures.values()) push(`uv range of ${name}: ${uvRange(loaded, name)}`)
+
+  push()
+  push(`skins (${car.skins.length}), shown: ${shownSkin ?? 'model'}`)
+  for (const skin of car.skins)
+    push(`  ${skin.id}${skin.ours ? ' [ours]' : ''}: ${skin.files.join(', ')}`)
+  if (skinStatus.length) {
+    push('shown skin textures:')
+    for (const s of skinStatus) {
+      const detail =
+        s.status === 'loaded'
+          ? `${s.format} ${s.width}x${s.height}`
+          : s.status === 'error'
+            ? `ERROR ${s.error}`
+            : 'not in skin (model texture used)'
+      push(`  ${s.texture}: ${s.file ?? '-'} ${detail}`)
+    }
+  }
+
+  push()
+  push(`textures (${loaded.textures.length}):`)
+  for (const t of loaded.textures) push(`  ${t.name}: ${textureFormat(t.data)}`)
+
+  push()
+  push(`materials (${loaded.materials.length}):`)
+  loaded.materials.forEach((m, i) => {
+    const meshes = loaded.meshes.filter((x) => x.materialId === i)
+    const hidden = meshes.filter((x) => x.hidden).length
+    const tex = m.textures.map((t) => `${t.name}=${t.texture}`).join(' ')
+    const props = m.properties.map((p) => `${p.name}=${prop(p.a)}`).join(' ')
+    push(
+      `  #${i} ${m.name} [${m.shader}] blend=${m.blendMode} at=${m.alphaTested ? 1 : 0} depth=${m.depthMode} ` +
+        `meshes=${meshes.length}${hidden ? ` (${hidden} hidden)` : ''}`,
+    )
+    if (tex) push(`      ${tex}`)
+    if (props) push(`      ${props}`)
+  })
+
+  push()
+  const hidden = loaded.meshes.filter((m) => m.hidden)
+  push(`meshes: ${loaded.meshes.length}, hidden by default: ${hidden.length}`)
+  for (const m of hidden) push(`  hidden (${m.hiddenReason}): ${m.path}/${m.name}`)
+  if (log.length) {
+    push()
+    push(`log (${log.length}):`)
+    for (const e of log) push(`  [${e.level}${e.count > 1 ? ` x${e.count}` : ''}] ${e.message}`)
+  }
+  return lines.join('\n')
+}
+
+export function describeMesh(loaded: LoadedCar, index: number): string[] {
+  const mesh = loaded.meshes.find((m) => m.index === index)
+  if (!mesh) return []
+  const mat = loaded.materials[mesh.materialId]
+  const out = [
+    `${mesh.path}/${mesh.name}`,
+    `material #${mesh.materialId} ${mat?.name ?? '?'} [${mat?.shader ?? '?'}]`,
+    `blend=${mat?.blendMode} alphaTested=${mat?.alphaTested ? 1 : 0} depth=${mat?.depthMode}`,
+    `triangles=${mesh.indices.length / 3}${mesh.hidden ? ` hidden (${mesh.hiddenReason})` : ''}`,
+  ]
+  for (const t of mat?.textures ?? []) out.push(`${t.name} = ${t.texture}`)
+  return out
+}
