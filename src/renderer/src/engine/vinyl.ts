@@ -2,8 +2,10 @@
 // textures of their projectors.
 
 import { FLAG_PREFIX } from '@shared/design/params'
+import { normalizeFill } from '@shared/design/patterns'
 import { dataUrlToBytes } from '@shared/design/project'
 import { flagDataUrl } from './flags'
+import { drawPattern } from './patterns'
 import {
   fontAssetId,
   type Asset,
@@ -13,6 +15,8 @@ import {
 } from '@shared/design/types'
 
 const SHAPE_SIZE = 1024
+/** Patterns have fine detail: their shapes get more pixels. */
+const PATTERN_SIZE = 2048
 const TEXT_PX = 256
 const IMAGE_MAX = 2048
 
@@ -168,7 +172,7 @@ export function rasterKey(layer: Layer, assets: Record<string, Asset>): string {
   const aspect = (layer.placement.width / layer.placement.height).toFixed(3)
   switch (layer.kind) {
     case 'shape':
-      return `shape|${layer.shape}|${layer.color}|${aspect}`
+      return `shape|${layer.shape}|${layer.color}|${aspect}|${layer.fill ? JSON.stringify(layer.fill) : ''}`
     case 'text':
       return `text|${layer.text}|${layer.font}|${layer.bold}|${layer.italic}|${layer.color}|${layer.outline}|${layer.outlineColor}|${assets[fontAssetId(layer.font) ?? '']?.data.length ?? 0}|${aspect}`
     case 'image':
@@ -200,16 +204,38 @@ function fitInBox(w: number, h: number, aspect: number) {
 export async function rasterize(
   layer: Layer,
   assets: Record<string, Asset>,
+  /** Longest side of shapes in pixels (thumbnails need far fewer). */
+  options: { maxSize?: number } = {},
 ): Promise<HTMLCanvasElement> {
   const canvas = document.createElement('canvas')
   const ctx = canvas.getContext('2d')!
   switch (layer.kind) {
     case 'shape': {
+      const fill = normalizeFill(layer.fill)
       const aspect = Math.max(0.05, Math.min(20, layer.placement.width / layer.placement.height))
-      canvas.width = aspect >= 1 ? SHAPE_SIZE : Math.max(8, Math.round(SHAPE_SIZE * aspect))
-      canvas.height = aspect >= 1 ? Math.max(8, Math.round(SHAPE_SIZE / aspect)) : SHAPE_SIZE
-      ctx.fillStyle = layer.color
-      ctx.fill(shapePath(layer.shape, canvas.width, canvas.height), 'evenodd')
+      const size = Math.min(fill ? PATTERN_SIZE : SHAPE_SIZE, options.maxSize ?? Infinity)
+      canvas.width = aspect >= 1 ? size : Math.max(8, Math.round(size * aspect))
+      canvas.height = aspect >= 1 ? Math.max(8, Math.round(size / aspect)) : size
+      const path = shapePath(layer.shape, canvas.width, canvas.height)
+      if (!fill) {
+        ctx.fillStyle = layer.color
+        ctx.fill(path, 'evenodd')
+        break
+      }
+      if (!fill.transparent) {
+        ctx.fillStyle = fill.background
+        ctx.fill(path, 'evenodd')
+      }
+      const pattern = document.createElement('canvas')
+      pattern.width = canvas.width
+      pattern.height = canvas.height
+      const pctx = pattern.getContext('2d')!
+      drawPattern(pctx, canvas.width, canvas.height, fill, layer.color)
+      // keep the pattern inside the shape
+      pctx.globalCompositeOperation = 'destination-in'
+      pctx.fillStyle = '#000'
+      pctx.fill(path, 'evenodd')
+      ctx.drawImage(pattern, 0, 0)
       break
     }
     case 'text': {

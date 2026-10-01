@@ -223,7 +223,7 @@ test('vinyl editor: add, undo/redo, resize with the wheel, export', async ({ pag
   await expect(page.locator('.notice.ok')).toBeVisible({ timeout: 60_000 })
   const dir = 'content/cars/aclivery_test_coupe/skins/vinyl_test/'
   // the white rectangle shows up on the blue car
-  expect(await previewShare(page, dir, 'white')).toBeGreaterThan(0.005)
+  expect(await previewShare(page, dir, 'light')).toBeGreaterThan(0.005)
   expect(await previewShare(page, dir, 'blue')).toBeGreaterThan(0.03)
 })
 
@@ -333,12 +333,20 @@ test('projects save and open, unsaved work is restored after a restart', async (
   // unsaved work survives a reload through the autosave
   await page.locator('.add-grid .tool').nth(5).click() // star
   await expect(page.locator('.layer-row')).toHaveCount(2)
+  await page
+    .locator('.layer-row')
+    .nth(1)
+    .click({ modifiers: ['Control'] })
+  await page.getByRole('button', { name: /^(Сгруппировать|Group)$/ }).click()
+  await expect(page.locator('.group-row')).toContainText(/Группа 1|Group 1/)
   await page.waitForTimeout(2500)
   await page.reload()
   await expect(page.locator('.app-bar')).toContainText(/AC Livery Test Coupe/)
   await page.getByRole('button', { name: /Восстановить|Restore/ }).click()
   await expect(page.locator('.view-toolbar')).toBeVisible({ timeout: 60_000 })
-  await expect(page.locator('.layer-row')).toHaveCount(2)
+  await expect(page.locator('.layer-row:not(.group-row)')).toHaveCount(2)
+  // the group keeps its name
+  await expect(page.locator('.group-row')).toContainText(/Группа 1|Group 1/)
   await expect(page.locator('.app-bar')).toHaveCount(0)
 })
 
@@ -542,7 +550,10 @@ test('templates: preview, apply with parameters, save and reuse', async ({ page 
   await page.locator('.tabs button').nth(1).click()
   await panel(page, 'template')
   const cards = page.locator('.template-card')
-  await expect(cards).toHaveCount(5)
+  const builtins = 18
+  await expect(cards).toHaveCount(builtins)
+  // built-in cards get a side-view thumbnail
+  await expect(cards.nth(0).locator('.template-thumb img')).toHaveCount(1, { timeout: 30_000 })
 
   // pointing at a card previews it without touching the design
   await cards.nth(0).hover()
@@ -583,9 +594,9 @@ test('templates: preview, apply with parameters, save and reuse', async ({ page 
   await panel(page, 'template')
   await page.getByRole('textbox', { name: /Название шаблона|Template name/ }).fill('My League')
   await page.getByRole('button', { name: /Сохранить как шаблон|Save as template/ }).click()
-  await expect(cards).toHaveCount(6)
-  await expect(cards.nth(5)).toContainText('My League')
-  await expect(cards.nth(5).locator('img')).toHaveCount(1)
+  await expect(cards).toHaveCount(builtins + 1)
+  await expect(cards.nth(builtins)).toContainText('My League')
+  await expect(cards.nth(builtins).locator('img')).toHaveCount(1)
 
   await cards
     .nth(4)
@@ -593,12 +604,53 @@ test('templates: preview, apply with parameters, save and reuse', async ({ page 
     .click() // minimal
   await expect(page.locator('.params h3')).toContainText(/Минимализм|Minimal/)
   await cards
-    .nth(5)
+    .nth(builtins)
     .getByRole('button', { name: /Применить|Apply/ })
     .click()
   await expect(page.locator('.params h3')).toContainText('My League')
   // values typed before survive switching templates
   await expect(page.getByRole('textbox', { name: /^(Номер|Number)/ })).toHaveValue('144')
+
+  // colours come with the template's look
+  await cards
+    .filter({ hasText: /Соты|Honeycomb/ })
+    .getByRole('button', { name: /Применить|Apply/ })
+    .click()
+  await expect(primary).toHaveValue('#16181b')
+  await expect(page.getByRole('textbox', { name: /^(Номер|Number)/ })).toHaveValue('144')
+})
+
+test('pattern vinyls: add from the gallery and change the pattern', async ({ page }) => {
+  const errors: string[] = []
+  page.on('pageerror', (e) => errors.push(e.message))
+  await openCar(page)
+  await page.locator('.tabs button').nth(1).click()
+  await page.locator('.view-toolbar button').nth(1).click() // left side
+  await page.getByRole('button', { name: /^(Узоры…|Patterns…)$/ }).click()
+  await expect(page.locator('.pattern-thumb')).toHaveCount(19)
+  await page.locator('.pattern-thumb', { hasText: /^(Шашки|Checks)$/ }).click()
+  await expect(page.locator('.layer-row')).toHaveCount(1)
+  await expect(page.locator('.layer-row')).toContainText('checker')
+
+  const fill = page.getByRole('combobox', { name: /^(Заливка|Fill)$/ })
+  await expect(fill).toHaveValue('checker')
+  // the checks are white (lit: light grey) on the red paint
+  await panel(page, 'save')
+  await page.getByLabel(/^(Название|Name)$/).fill('Checks')
+  await page.locator('.btn.primary.wide').click()
+  await expect(page.locator('.notice.ok')).toBeVisible({ timeout: 60_000 })
+  const dir = 'content/cars/aclivery_test_coupe/skins/checks/'
+  expect(await previewShare(page, dir, 'light')).toBeGreaterThan(0.005)
+  expect(await previewShare(page, dir, 'red')).toBeGreaterThan(0.05)
+
+  // generated patterns offer other variants; flat colour hides the settings
+  await panel(page, 'design')
+  await fill.selectOption('camo')
+  await expect(page.getByRole('button', { name: /Другой вариант|Another variant/ })).toBeVisible()
+  await expect(page.getByText(/^(Фон|Background)$/)).toBeVisible()
+  await fill.selectOption('')
+  await expect(page.getByRole('button', { name: /Другой вариант|Another variant/ })).toHaveCount(0)
+  expect(errors).toEqual([])
 })
 
 test('stickers from the library become layers and sponsor values', async ({ page }) => {

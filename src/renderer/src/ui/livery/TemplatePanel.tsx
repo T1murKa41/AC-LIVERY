@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { TemplateParam } from '@shared/design/params'
 import { BUILTIN_TEMPLATES, type BuiltinTemplate } from '@shared/design/templates'
+import { cachedThumbnail, templateThumbnail } from '../../engine/thumbnail'
 import { useStore, type TemplateDraft, type UserTemplate } from '../../state/store'
 import { useParamLabel } from './Binding'
 import { FlagSelect } from './FlagSelect'
@@ -207,6 +208,7 @@ function Gallery() {
             name={b.name[lang]}
             description={b.description[lang]}
             swatch={b.swatch}
+            builtin={b}
             onEnter={() => hover(b.id, async () => builtin(b))}
             onLeave={() => hover(null)}
             onApply={() => apply(builtin(b))}
@@ -251,10 +253,28 @@ function Gallery() {
   )
 }
 
+/** Side-view thumbnail of a built-in template, drawn in the background. */
+function useThumbnail(template: BuiltinTemplate | undefined): string | null {
+  const [url, setUrl] = useState(() => (template ? cachedThumbnail(template.id) : null))
+  useEffect(() => {
+    if (!template || url) return
+    let live = true
+    templateThumbnail(template.id, () => template.build()).then(
+      (u) => live && setUrl(u),
+      (err: unknown) => console.error(err),
+    )
+    return () => {
+      live = false
+    }
+  }, [template, url])
+  return url
+}
+
 function TemplateCard(props: {
   name: string
   description?: string
   swatch?: [string, string, string]
+  builtin?: BuiltinTemplate
   template?: UserTemplate
   onEnter(): void
   onLeave(): void
@@ -263,6 +283,8 @@ function TemplateCard(props: {
   onDelete?(): void
 }) {
   const { t } = useTranslation()
+  const thumbnail = useThumbnail(props.builtin)
+  const image = props.template?.previewUrl ?? thumbnail
   return (
     <div
       className="template-card"
@@ -272,8 +294,8 @@ function TemplateCard(props: {
       onBlur={props.onLeave}
     >
       <div className="template-thumb" aria-hidden>
-        {props.template?.previewUrl ? (
-          <img src={props.template.previewUrl} alt="" />
+        {image ? (
+          <img src={image} alt="" />
         ) : (
           (props.swatch ?? ['#444', '#666', '#888']).map((c, i) => (
             <span key={i} style={{ background: c }} />

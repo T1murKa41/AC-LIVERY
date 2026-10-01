@@ -44,7 +44,9 @@ export const STANDARD_PARAMS: readonly TemplateParam[] = [
 ]
 
 /** Properties of a layer that can follow a parameter. */
-export type LayerBindings = Partial<Record<'color' | 'outlineColor' | 'asset', string>>
+export type LayerBindings = Partial<
+  Record<'color' | 'outlineColor' | 'background' | 'asset', string>
+>
 
 /** Draft-level colours that can follow a parameter. */
 export type DraftBindingTarget =
@@ -105,7 +107,18 @@ export function resolveLayer(
   const b = layer.bindings ?? {}
   switch (layer.kind) {
     case 'shape':
-      return { ...layer, color: boundColor(layer.color, b.color, values) }
+      return {
+        ...layer,
+        color: boundColor(layer.color, b.color, values),
+        ...(layer.fill
+          ? {
+              fill: {
+                ...layer.fill,
+                background: boundColor(layer.fill.background, b.background, values),
+              },
+            }
+          : {}),
+      }
     case 'text':
       return {
         ...layer,

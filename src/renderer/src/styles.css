@@ -1074,15 +1074,15 @@ button.skin-item {
 
 .template-grid {
   display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
 }
 
 .template-card {
-  display: grid;
-  grid-template-columns: 64px minmax(0, 1fr);
-  grid-template-rows: auto auto;
-  gap: 6px 10px;
-  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 6px;
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: var(--panel-2);
@@ -1094,14 +1094,15 @@ button.skin-item {
 }
 
 .template-card > .row {
-  grid-column: 1 / -1;
+  margin-top: auto;
 }
 
 .template-thumb {
   display: flex;
-  height: 40px;
+  aspect-ratio: 45 / 16;
   overflow: hidden;
   border-radius: 4px;
+  background: #2a2f36;
 }
 
 .template-thumb span {
@@ -1123,7 +1124,12 @@ button.skin-item {
 }
 
 .template-info span {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
   color: var(--muted);
+  font-size: 11px;
 }
 
 .param-row {
@@ -1234,6 +1240,49 @@ button.skin-item {
 
 .btn.active {
   border-color: var(--accent);
+}
+
+/* ---------------------------------------------------------------- patterns */
+
+.pattern-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.pattern-thumb {
+  display: grid;
+  gap: 3px;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: transparent;
+  color: inherit;
+  font-size: 11px;
+  text-align: center;
+  cursor: pointer;
+}
+
+.pattern-thumb:hover {
+  border-color: var(--accent);
+}
+
+.pattern-thumb canvas {
+  display: block;
+  width: 100%;
+  height: 44px;
+  border-radius: calc(var(--radius) - 2px);
+}
+
+.pattern-thumb span {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  min-height: 2.4em;
+  line-height: 1.2;
 }
 
 /* ------------------------------------------------------------------ league */

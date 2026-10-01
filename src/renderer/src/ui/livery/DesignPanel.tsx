@@ -13,6 +13,7 @@ import {
 } from '@shared/design/types'
 import { useStore, type AlignMode, type SelectMode } from '../../state/store'
 import { BindSelect, BoundColor, useParams } from './Binding'
+import { FillProperties, PatternPicker } from './Patterns'
 import { ShapeIcon } from './ShapeIcon'
 import { Slider } from './Slider'
 import { StickerPicker } from './StickerPicker'
@@ -32,8 +33,10 @@ export function DesignPanel() {
   const bindDraft = useStore((s) => s.bindDraft)
   const imageInput = useRef<HTMLInputElement>(null)
   const baseFinish = draft.baseFinish ?? 'stock'
-  const [showStickers, setShowStickers] = useState(false)
+  const [picker, setPicker] = useState<'stickers' | 'patterns' | null>(null)
   const addStickerLayer = useStore((s) => s.addStickerLayer)
+  const addPattern = useStore((s) => s.addPattern)
+  const toggle = (p: 'stickers' | 'patterns') => setPicker((v) => (v === p ? null : p))
 
   return (
     <>
@@ -91,9 +94,16 @@ export function DesignPanel() {
             {t('design.addImage')}
           </button>
           <button
-            className={`btn small ${showStickers ? 'active' : ''}`}
-            aria-expanded={showStickers}
-            onClick={() => setShowStickers((v) => !v)}
+            className={`btn small ${picker === 'patterns' ? 'active' : ''}`}
+            aria-expanded={picker === 'patterns'}
+            onClick={() => toggle('patterns')}
+          >
+            {t('patterns.open')}
+          </button>
+          <button
+            className={`btn small ${picker === 'stickers' ? 'active' : ''}`}
+            aria-expanded={picker === 'stickers'}
+            onClick={() => toggle('stickers')}
           >
             {t('stickers.open')}
           </button>
@@ -109,7 +119,8 @@ export function DesignPanel() {
             }}
           />
         </div>
-        {showStickers && <StickerPicker onPick={(s) => void addStickerLayer(s)} />}
+        {picker === 'stickers' && <StickerPicker onPick={(s) => void addStickerLayer(s)} />}
+        {picker === 'patterns' && <PatternPicker onPick={addPattern} />}
         {error && <p className="notice error">{error}</p>}
         <p className="hint">{t('design.mouseHint')}</p>
       </section>
@@ -448,14 +459,7 @@ function LayerProperties() {
               </button>
             ))}
           </div>
-          <BoundColor
-            value={layer.color}
-            onChange={(color) => void updateLayer(layer.id, { color })}
-            label={t('design.color')}
-            binding={layer.bindings?.color}
-            onBind={(p) => bindLayer(layer.id, 'color', p)}
-            disabled={disabled}
-          />
+          <FillProperties layer={layer} disabled={disabled} />
         </>
       )}
 

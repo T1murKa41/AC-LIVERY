@@ -28,6 +28,7 @@ import { fileToDataUrl, fontFamily, imageAspect, textAspect } from '../engine/vi
 import { bytesToDataUrl, packProject, projectFileName, unpackProject } from '@shared/design/project'
 import { BUILTIN_STICKERS, stickerAssetId, type Sticker } from '@shared/design/stickers'
 import { SKIN_CONFIG_FILE } from '@shared/design/csp'
+import { type PatternPreset } from '@shared/design/patterns'
 import { readTable } from '@shared/league/sheet'
 import {
   DEFAULT_LEAGUE,
@@ -348,6 +349,8 @@ interface Actions {
   setLiveryPanel(panel: LiveryPanel): void
   // design editing
   addShape(shape: ShapeKind): void
+  /** A rectangle filled with a ready-made pattern. */
+  addPattern(preset: PatternPreset): void
   addText(text?: string): Promise<void>
   addImage(file: File): Promise<void>
   importFont(file: File): Promise<string | null>
@@ -455,6 +458,19 @@ function paramAssets(d: LiveryDraft): string[] {
   return imageParams
     .flatMap((p) => [p.default, d.values?.[p.id] ?? '', ...rows.map((r) => r.values[p.id] ?? '')])
     .filter(Boolean)
+}
+
+/**
+ * Values typed earlier that carry over to another template: the number,
+ * names and country. Colours and logos belong to the template's look.
+ */
+function carriedValues(draft: LiveryDraft, t: TemplateDraft): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(draft.values ?? {}).filter(
+      ([id, v]) =>
+        v !== '' && t.params.some((p) => p.id === id && (p.kind === 'text' || p.kind === 'flag')),
+    ),
+  )
 }
 
 /** Visual properties of any layer kind that can be edited. */
@@ -1121,6 +1137,16 @@ export const useStore = create<State & Actions>((set, get) => {
       addLayer(newShapeLayer(shape, initialPlacement(0.18), '#ffffff'))
     },
 
+    addPattern(preset) {
+      const layer = newShapeLayer('rect', initialPlacement(preset.width), preset.color ?? '#ffffff')
+      addLayer({
+        ...layer,
+        name: preset.id,
+        fill: { ...preset.fill },
+        placement: { ...layer.placement, height: preset.height },
+      })
+    },
+
     async addText(text = '00') {
       const layer = newTextLayer(text, initialPlacement(0.2), 1)
       try {
@@ -1527,12 +1553,7 @@ export const useStore = create<State & Actions>((set, get) => {
       previewDraft = null
       pushHistory()
       const draft = get().draft
-      // values typed earlier (number, driver...) carry over to the new template
-      const kept = Object.fromEntries(
-        Object.entries(draft.values ?? {}).filter(
-          ([id, v]) => t.params.some((p) => p.id === id && p.kind !== 'image') && v !== '',
-        ),
-      )
+      const kept = carriedValues(draft, t)
       const next: LiveryDraft = {
         ...draft,
         baseColor: t.baseColor,
@@ -1567,7 +1588,7 @@ export const useStore = create<State & Actions>((set, get) => {
         csp: t.csp ?? DEFAULT_CSP,
         design: t.design,
         params: t.params,
-        values: { ...t.values, ...draft.values },
+        values: { ...t.values, ...carriedValues(draft, t) },
         bindings: t.bindings ?? {},
       }
       void rebake()
@@ -2267,6 +2288,7 @@ export function normalizeDraft(raw: unknown): LiveryDraft {
     design: {
       layers: Array.isArray(design.layers) ? design.layers : [],
       assets: asRecord(design.assets) as Design['assets'],
+      ...(design.groups ? { groups: asRecord(design.groups) as Design['groups'] } : {}),
     },
   }
 }

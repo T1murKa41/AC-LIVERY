@@ -4,6 +4,7 @@
 // same design can be applied to another car.
 
 import type { LayerBindings } from './params'
+import type { PatternFill } from './patterns'
 
 export type V3 = [number, number, number]
 
@@ -82,7 +83,10 @@ interface LayerBase {
 export interface ShapeLayer extends LayerBase {
   kind: 'shape'
   shape: ShapeKind
+  /** Fill colour, or the colour of the pattern. */
   color: string
+  /** Pattern inside the shape; missing means a flat colour. */
+  fill?: PatternFill
 }
 
 export interface TextLayer extends LayerBase {
